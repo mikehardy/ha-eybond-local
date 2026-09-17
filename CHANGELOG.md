@@ -25,6 +25,14 @@ the GitHub release body should be rendered from the matching version section her
   separately from full-pack voltage. No retail model, serial number, PV power
   or inverter controls are inferred.
 
+- Short-ASCII publishes labelled **Estimated AC Load Power**
+  (`estimated_ac_load_power` = load% × rated VA from F) and **Best Available AC
+  Load Estimate** (`best_available_ac_load_estimate`): net pack discharge
+  (≤ −25 W) → `abs(battery_power)` (`bms_dc`); else Q1 %×VA (`q1_percent`) —
+  for low-load Q1 zeros. Pure `estimated_ac_load_power`, `battery_power`, and
+  `pv_power` stay separate; optional diagnostic
+  `best_available_ac_load_estimate_source` is `q1_percent` | `bms_dc` (#45).
+
 - Short-ASCII devices can also expose documented BMS and rated readings through
   optional read-only RB/F/RH queries. These entities are disabled by default.
   Missing, invalid or expired BMS samples remove their old values without

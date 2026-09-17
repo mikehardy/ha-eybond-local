@@ -85,6 +85,13 @@ class BatteryDcDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gated.values["bms_total_voltage"], 52.0)
         # 52.0 V × (0 − 29) = −1508.0 W measured DC
         self.assertEqual(gated.values["battery_power"], -1508.0)
+        self.assertEqual(gated.values["estimated_ac_load_power"], 1569.8)
+        self.assertEqual(gated.values["best_available_ac_load_estimate"], 1508.0)
+        self.assertEqual(gated.values["best_available_ac_load_estimate_source"], "bms_dc")
+        self.assertNotIn("load_power", gated.values)
+        self.assertNotEqual(
+            gated.values["battery_power"], gated.values["estimated_ac_load_power"],
+        )
 
         # Keep RB from refreshing so the ~60 s OptionalSample TTL can fire alone.
         rb = next(sample for sample in self.state[STATE_KEY].samples if sample.command == "RB")

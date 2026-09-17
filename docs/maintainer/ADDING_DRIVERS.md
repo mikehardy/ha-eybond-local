@@ -126,9 +126,13 @@ measurements/path flags, including nonzero trailing fields seen in the capture.
 Positive voltage with zero SOC remains valid. Data availability is not a
 physical connection detector. Reference voltage, BMS voltage and ratings have
 separate owners; pack-voltage is never inferred from reference voltage.
-Measured battery DC watts use published BMS currents. Optional entities are
-disabled by default. Support evidence capture can read MP/Q1/MD/F/RH/RB without
-changing command-support state.
+Measured battery DC watts use published BMS currents; the labelled AC-load
+estimate uses load% × rated VA — never substitute one for the other.
+``best_available_ac_load_estimate`` is a third, labelled composite
+(``bms_dc`` → ``q1_percent``) for dashboards; it must not rewrite pure
+``estimated_ac_load_power``, ``battery_power``, or ``pv_power``.
+Optional entities are disabled by default. Support evidence capture can read
+MP/Q1/MD/F/RH/RB without changing command-support state.
 
 #### Short-ASCII RB hard-reject / link-loss
 

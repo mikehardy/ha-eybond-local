@@ -20,6 +20,10 @@ from .catalog_probe import async_probe_ascii_catalog, catalog_model_name
 from .read_result import DriverReadMode, DriverReadResult
 from .support_marker import DriverSupportMarker
 from .short_ascii_battery_dc import battery_dc_power_values
+from .short_ascii_estimates import (
+    best_available_ac_load_estimate_values,
+    estimated_ac_load_values,
+)
 from .short_ascii_optional import optional_reads_for
 
 
@@ -127,8 +131,11 @@ class EybondShortAsciiDriver(InverterDriver):
         # FULL absence invalidates expired/failed optional fields in the hub.
         # Q1 and RB have distinct owners: reference V is never pack/BMS V.
         # Measured battery DC needs RB currents gated by RH+F (optional path).
+        # Keep pure power keys separate (MX2); composite is labelled separately.
         merged = values | extra
         merged.update(battery_dc_power_values(merged))
+        merged.update(estimated_ac_load_values(merged))
+        merged.update(best_available_ac_load_estimate_values(merged))
         return DriverReadResult(values=merged, mode=DriverReadMode.FULL, diagnostics=diagnostics)
 
     async def async_capture_support_evidence(self, transport, inverter):
