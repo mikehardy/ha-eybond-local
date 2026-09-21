@@ -128,6 +128,50 @@ class BatteryDcDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("bms_discharging_current", stripped.values)
         self.assertNotIn("battery_power", stripped.values)
 
+    async def test_incomplete_f_omits_currents_while_rh1(self):
+        # F present but incomplete (zero rated current / battery voltage) → no I/P.
+        for label, frame in (
+            ("rated_current_zero", b"#115.0 000 48.00 60.0\r"),
+            ("rated_battery_voltage_zero", b"#115.0 105 00.00 60.0\r"),
+        ):
+            with self.subTest(label=label):
+                self.transport.responses["F"] = frame
+                self.transport.responses["RH"] = _rh(accuracy=1)
+                self.state.clear()
+                self.transport.requests.clear()
+                await self.read(0)  # RB without I (F incomplete / RH unread)
+                await self.read(1)  # F incomplete
+                await self.read(2)  # RH=1
+                rb = next(s for s in self.state[STATE_KEY].samples if s.command == "RB")
+                rb.next_due = 3
+                omitted = await self.read(3)
+                self.assertEqual(omitted.values.get("bms_total_voltage"), 52.0)
+                self.assertNotIn("bms_charging_current", omitted.values)
+                self.assertNotIn("bms_discharging_current", omitted.values)
+                self.assertNotIn("battery_power", omitted.values)
+                f = next(s for s in self.state[STATE_KEY].samples if s.command == "F")
+                self.assertIsNotNone(f.sampled_at)
+                rh = next(s for s in self.state[STATE_KEY].samples if s.command == "RH")
+                self.assertEqual(
+                    rh.values.get("short_ascii_bms_current_display_accuracy"), 1,
+                )
+
+    async def test_rh_expiry_strips_held_currents(self):
+        await self._arm_rh1_and_f()
+        # Hold RB; age RH past TTL so re-gate strips I/P while voltage remains.
+        rb = next(sample for sample in self.state[STATE_KEY].samples if sample.command == "RB")
+        rh = next(sample for sample in self.state[STATE_KEY].samples if sample.command == "RH")
+        f = next(sample for sample in self.state[STATE_KEY].samples if sample.command == "F")
+        rb.next_due = 10_000
+        rh.next_due = 10_000
+        f.next_due = 10_000
+        rh.sampled_at = 4 - 900  # expired at now=4 while RB (sampled at 3) is still fresh
+        stripped = await self.read(4)
+        self.assertEqual(stripped.values.get("bms_total_voltage"), 52.0)
+        self.assertNotIn("bms_charging_current", stripped.values)
+        self.assertNotIn("bms_discharging_current", stripped.values)
+        self.assertNotIn("battery_power", stripped.values)
+
     async def test_schema_entities_disabled_by_default(self):
         schema = load_register_schema(self.driver.register_schema_name)
         for key in ("bms_charging_current", "bms_discharging_current", "battery_power"):
