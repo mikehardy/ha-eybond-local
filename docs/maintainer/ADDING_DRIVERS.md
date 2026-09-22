@@ -114,9 +114,13 @@ in-cycle 0200 retry while connected, never `record_command_failure`, and an
 MPPT fence must not abort the Q1 merge. Freshness is checked after the await.
 Invalid/timeout replies clear that group immediately, and FULL-result omission
 removes it from the hub. A failed or cancelled mandatory cycle, lost
-connection, changed binding or clock rollback clears all samples. Only
-optional FC4 failures alongside a successful Q1 count towards the shared
-four-strike command cache; the existing re-check action re-enables requests.
+connection, changed binding or clock rollback clears all samples. Site-WIP
+exception: `mppt_diag` counters survive `OptionalReads.clear()` (Q1 wipe) and
+still republish; `short_ascii_optional_status` is `enabled_default: true` on
+purpose (see timeout vs never-due) — overlay instrumentation, not a product
+default flip. Only optional FC4 failures alongside a successful Q1 count
+towards the shared four-strike command cache; the existing re-check action
+re-enables requests.
 Support Archive capture may include correlated `0200_request` / `0200` hex
 when the framed aux facade is available (user-initiated evidence, not a stock
 poll).

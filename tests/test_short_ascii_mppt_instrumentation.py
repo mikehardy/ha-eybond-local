@@ -237,6 +237,38 @@ class MpptInstrumentationDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.diagnostics["aux_fence_reason"], "disconnected")
         self.assertEqual(result.diagnostics["mppt_fail_reason"], "timeout")
 
+    async def test_mppt_diag_survives_optional_clear_and_republishes(self):
+        """Q1 wipe clears samples; counters/mppt_diag survive and still republish."""
+        await self._prime_fc4()
+        self._hold_fc4()
+        self.transport.aux_responses[RUNTIME_QUERY_0200] = asyncio.TimeoutError()
+        failed = await self.read(3)
+        self.assertEqual(failed.diagnostics["mppt_poll_attempts"], 1)
+        self.assertEqual(failed.diagnostics["mppt_poll_fail"], 1)
+        self.assertEqual(failed.diagnostics["mppt_fail_timeout"], 1)
+        self.assertIn("MPPT=timeout", failed.diagnostics["short_ascii_optional_status"])
+        diag_before = self.state[STATE_KEY].mppt_diag
+
+        # Mandatory Q1 miss → optional.clear() (sample wipe). Diag must remain.
+        self.transport.responses["Q1"] = asyncio.TimeoutError()
+        with self.assertRaises(asyncio.TimeoutError):
+            await self.read(4)
+        self.assertTrue(all(not sample.values for sample in self.state[STATE_KEY].samples))
+        self.assertIs(self.state[STATE_KEY].mppt_diag, diag_before)
+        self.assertEqual(diag_before.poll_attempts, 1)
+        self.assertEqual(diag_before.poll_fail, 1)
+        self.assertEqual(diag_before.fail_timeout, 1)
+
+        # Next successful FULL cycle republishes surviving counters + status.
+        self.transport.responses["Q1"] = _responses()["Q1"]
+        republished = await self.read(5)
+        self.assertEqual(republished.diagnostics["mppt_poll_attempts"], 1)
+        self.assertEqual(republished.diagnostics["mppt_poll_fail"], 1)
+        self.assertEqual(republished.diagnostics["mppt_fail_timeout"], 1)
+        self.assertEqual(republished.diagnostics["mppt_fail_reason"], "timeout")
+        self.assertIn("short_ascii_optional_status", republished.diagnostics)
+        self.assertIn("MPPT=", republished.diagnostics["short_ascii_optional_status"])
+
 
 if __name__ == "__main__":
     unittest.main()
