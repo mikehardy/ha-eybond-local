@@ -192,12 +192,36 @@ class OptionalReads:
         # Oldest due first within the chosen set. Prefer FC4 (RB/F/RH) over aux
         # MPPT when both are due so a virgin MPPT next_due=0 cannot starve an
         # intentional RB refresh; MPPT still runs when it is the only due sample.
+        # Anti-starve: RB and MPPT share ~30s — after repeated prefer-FC4 skips
+        # while MPPT is stale (never ok / age > TTL), force one MPPT sample.
+        # F/RH (900s) contention does not advance the streak (avoids delaying
+        # the one-shot settings gate on cold start).
         fc4_due = [sample for sample in due if sample.command != MPPT_COMMAND]
         prefer_fc4_skip = bool(fc4_due) and mppt_due
-        candidates = fc4_due or due
+        rb_contending = any(sample.command == "RB" for sample in fc4_due)
+        mppt_stale = (
+            diag.last_success_at is None
+            or (now - diag.last_success_at) > MPPT_TTL
+        )
+        force_mppt = (
+            prefer_fc4_skip
+            and rb_contending
+            and mppt_stale
+            and diag.prefer_fc4_skip_streak >= 2
+        )
+        if force_mppt:
+            candidates = [sample for sample in due if sample.command == MPPT_COMMAND]
+        else:
+            candidates = fc4_due or due
         sample = min(candidates, key=lambda item: item.next_due) if candidates else None
-        if prefer_fc4_skip and sample is not None and sample.command != MPPT_COMMAND:
-            diag.note_prefer_fc4_skip()
+        if force_mppt:
+            diag.note_forced_anti_starve()
+        elif prefer_fc4_skip and sample is not None and sample.command != MPPT_COMMAND:
+            diag.note_prefer_fc4_skip(contending_rb=rb_contending)
+        elif sample is not None and sample.command == MPPT_COMMAND:
+            diag.reset_prefer_fc4_streak()
+        elif not prefer_fc4_skip:
+            diag.reset_prefer_fc4_streak()
         if sample is not None:
             key = _PREFIX + sample.command
             mppt_retried = False

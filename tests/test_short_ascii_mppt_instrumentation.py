@@ -38,6 +38,7 @@ QUIET_MPPT_KEYS = (
     "mppt_consecutive_failures",
     "mppt_due_this_cycle",
     "mppt_skipped_prefer_fc4",
+    "mppt_forced_anti_starve",
     "mppt_last_success_age_s",
     "aux_fence_reason",
     "aux_last_error",
@@ -95,6 +96,12 @@ class MpptInstrumentationDriverTests(unittest.IsolatedAsyncioTestCase):
         await self.read(0)
         await self.read(1)
         await self.read(2)
+        # Anti-starve may force MPPT during prime; reset streak and make MPPT
+        # due again so later cases control selection / fail paths explicitly.
+        diag = self.state[STATE_KEY].mppt_diag
+        diag.prefer_fc4_skip_streak = 0
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        mppt.next_due = 0
         self.transport.aux_requests.clear()
 
     def _hold_fc4(self):
@@ -189,8 +196,12 @@ class MpptInstrumentationDriverTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prefer_fc4_skip_counted_without_attempt(self):
         await self._prime_fc4()
-        before = self.state[STATE_KEY].mppt_diag.skipped_prefer_fc4
-        attempts_before = self.state[STATE_KEY].mppt_diag.poll_attempts
+        diag = self.state[STATE_KEY].mppt_diag
+        # Fresh MPPT: prefer-FC4 remains default (anti-starve must not fire).
+        diag.last_success_at = 2.0
+        diag.reset_prefer_fc4_streak()
+        before = diag.skipped_prefer_fc4
+        attempts_before = diag.poll_attempts
         for sample in self.state[STATE_KEY].samples:
             sample.next_due = 3
         self.transport.requests.clear()
@@ -199,6 +210,7 @@ class MpptInstrumentationDriverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"RB\x01\r", self.transport.requests)
         self.assertEqual(self.transport.aux_requests, [])
         self.assertEqual(result.diagnostics["mppt_skipped_prefer_fc4"], before + 1)
+        self.assertEqual(result.diagnostics["mppt_forced_anti_starve"], 0)
         self.assertEqual(result.diagnostics["mppt_due_this_cycle"], 1)
         self.assertEqual(result.diagnostics["mppt_poll_attempts"], attempts_before)
 

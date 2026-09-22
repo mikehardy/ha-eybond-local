@@ -9,7 +9,8 @@ quiet ``mppt_error_code`` / ``mppt_error`` diagnostics default on in
 ``eybond_short_ascii/base.json``.
 
 Site-WIP quiet poll instrumentation (``MpptPollDiag``) discriminates stuck-aux
-hypotheses without WARNING spam or healing side effects.
+hypotheses without WARNING spam. Prefer-FC4 anti-starve is a minimal schedule
+heal when MPPT goes stale under repeated FC4 preference.
 """
 
 from __future__ import annotations
@@ -115,7 +116,7 @@ def _collector_disconnect_snapshot(transport: object) -> tuple[int | None, str]:
 
 @dataclass
 class MpptPollDiag:
-    """Quiet counters for stuck-aux discrimination (site-WIP; no healing)."""
+    """Quiet counters for stuck-aux discrimination (site-WIP)."""
 
     poll_attempts: int = 0
     poll_ok: int = 0
@@ -128,6 +129,8 @@ class MpptPollDiag:
     retry_recovered: int = 0
     not_admitted_cycles: int = 0
     skipped_prefer_fc4: int = 0
+    prefer_fc4_skip_streak: int = 0
+    forced_anti_starve: int = 0
     due_this_cycle: bool = False
     last_success_at: float | None = None
     aux_connected: bool | None = None
@@ -147,8 +150,19 @@ class MpptPollDiag:
     def note_due(self, due: bool) -> None:
         self.due_this_cycle = due
 
-    def note_prefer_fc4_skip(self) -> None:
+    def note_prefer_fc4_skip(self, *, contending_rb: bool = True) -> None:
         self.skipped_prefer_fc4 += 1
+        if contending_rb:
+            self.prefer_fc4_skip_streak += 1
+        else:
+            self.prefer_fc4_skip_streak = 0
+
+    def reset_prefer_fc4_streak(self) -> None:
+        self.prefer_fc4_skip_streak = 0
+
+    def note_forced_anti_starve(self) -> None:
+        self.forced_anti_starve += 1
+        self.prefer_fc4_skip_streak = 0
 
     def note_attempt(self, transport: object) -> None:
         self.poll_attempts += 1
@@ -159,6 +173,7 @@ class MpptPollDiag:
         self.consecutive_failures = 0
         self.fail_reason = ""
         self.last_success_at = now
+        self.prefer_fc4_skip_streak = 0
         self.aux_fence_reason = ""
         self.aux_last_error = ""
         if retried:
@@ -204,6 +219,7 @@ class MpptPollDiag:
             "mppt_consecutive_failures": self.consecutive_failures,
             "mppt_due_this_cycle": 1 if self.due_this_cycle else 0,
             "mppt_skipped_prefer_fc4": self.skipped_prefer_fc4,
+            "mppt_forced_anti_starve": self.forced_anti_starve,
             "mppt_last_success_age_s": age,
             "aux_connected": self.aux_connected,
             "aux_fence_reason": self.aux_fence_reason,
