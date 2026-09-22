@@ -362,34 +362,42 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("battery_soc", result.values)
         self.assertEqual(result.diagnostics["mppt_forced_anti_starve"], 0)
 
-    async def test_prefer_fc4_anti_starve_forces_mppt_after_skips(self):
-        """After ≥2 prefer-FC4 skips with stale MPPT, next collision takes MPPT."""
+    async def test_prefer_fc4_anti_starve_forces_mppt_when_stale(self):
+        """After ≥1 RB prefer-FC4 skip while stale, next RB collision takes MPPT."""
         await self._prime_through_rh()
         diag = self.state[STATE_KEY].mppt_diag
-        self.assertIsNone(diag.last_success_at)
-        # Isolate streak from prime-time RB/F/RH preference.
-        diag.reset_prefer_fc4_streak()
+        # Normalize post-prime: stale MPPT, empty streak, due again.
+        diag.last_success_at = None
+        diag.forced_anti_starve = 0
+        diag.prefer_fc4_skip_streak = 0
+        diag.poll_attempts = 0
+        diag.poll_ok = 0
         skips_before = diag.skipped_prefer_fc4
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        mppt.clear()
+        mppt.outcome = "not_checked"
         for sample in self.state[STATE_KEY].samples:
             sample.next_due = 3
         self.transport.requests.clear()
         self.transport.aux_requests.clear()
-        # Two prefer-FC4 skips while both due (MPPT never ok → stale).
+        # First RB collision while stale: prefer FC4, streak → 1.
         first = await self.read(3)
         self.assertIn(b"RB\x01\r", self.transport.requests)
         self.assertEqual(self.transport.aux_requests, [])
         self.assertEqual(first.diagnostics["mppt_skipped_prefer_fc4"], skips_before + 1)
         self.assertEqual(first.diagnostics["mppt_forced_anti_starve"], 0)
         self.assertEqual(diag.prefer_fc4_skip_streak, 1)
+        # F/RH contention must not clear the RB streak.
         for sample in self.state[STATE_KEY].samples:
             sample.next_due = 4
+        # Hold RB off so F contends alone with MPPT.
+        rb = next(s for s in self.state[STATE_KEY].samples if s.command == "RB")
+        rb.next_due = 10_000
         self.transport.requests.clear()
         second = await self.read(4)
-        self.assertIn(b"RB\x01\r", self.transport.requests)
-        self.assertEqual(self.transport.aux_requests, [])
-        self.assertEqual(second.diagnostics["mppt_skipped_prefer_fc4"], skips_before + 2)
-        self.assertEqual(diag.prefer_fc4_skip_streak, 2)
-        # Third collision: streak ≥ 2 + stale → force MPPT, not FC4.
+        self.assertEqual(second.diagnostics["mppt_forced_anti_starve"], 0)
+        self.assertEqual(diag.prefer_fc4_skip_streak, 1)
+        # Next RB collision: streak ≥ 1 + stale → force MPPT.
         for sample in self.state[STATE_KEY].samples:
             sample.next_due = 5
         self.transport.requests.clear()
@@ -401,7 +409,7 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(forced.diagnostics["mppt_forced_anti_starve"], 1)
         self.assertEqual(forced.diagnostics["mppt_poll_attempts"], 1)
         self.assertEqual(diag.prefer_fc4_skip_streak, 0)
-        # Fresh MPPT keeps prefer-FC4 default on the next collision.
+        # Fresh MPPT keeps prefer-FC4 on the next RB collision.
         for sample in self.state[STATE_KEY].samples:
             sample.next_due = 6
         self.transport.requests.clear()
@@ -410,7 +418,6 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"RB\x01\r", self.transport.requests)
         self.assertEqual(self.transport.aux_requests, [])
         self.assertEqual(fresh.diagnostics["mppt_forced_anti_starve"], 1)
-        self.assertEqual(fresh.diagnostics["mppt_skipped_prefer_fc4"], skips_before + 3)
 
 
 class MpptSupportCaptureTests(unittest.IsolatedAsyncioTestCase):

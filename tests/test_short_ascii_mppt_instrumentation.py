@@ -96,10 +96,21 @@ class MpptInstrumentationDriverTests(unittest.IsolatedAsyncioTestCase):
         await self.read(0)
         await self.read(1)
         await self.read(2)
-        # Anti-starve may force MPPT during prime; reset streak and make MPPT
-        # due again so later cases control selection / fail paths explicitly.
+        # Anti-starve may force MPPT during prime; normalize so later cases own
+        # selection / counters / due flags.
         diag = self.state[STATE_KEY].mppt_diag
         diag.prefer_fc4_skip_streak = 0
+        diag.forced_anti_starve = 0
+        diag.skipped_prefer_fc4 = 0
+        diag.poll_attempts = 0
+        diag.poll_ok = 0
+        diag.poll_fail = 0
+        diag.fail_timeout = 0
+        diag.fail_connection = 0
+        diag.fail_decode = 0
+        diag.retry_recovered = 0
+        diag.consecutive_failures = 0
+        diag.fail_reason = ""
         mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
         mppt.next_due = 0
         self.transport.aux_requests.clear()

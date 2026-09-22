@@ -152,10 +152,11 @@ class MpptPollDiag:
 
     def note_prefer_fc4_skip(self, *, contending_rb: bool = True) -> None:
         self.skipped_prefer_fc4 += 1
+        # Only RB contention advances the anti-starve streak. F/RH must not
+        # reset it — live sticky showed F/RH skips clearing the streak before
+        # the next RB collision could force MPPT.
         if contending_rb:
             self.prefer_fc4_skip_streak += 1
-        else:
-            self.prefer_fc4_skip_streak = 0
 
     def reset_prefer_fc4_streak(self) -> None:
         self.prefer_fc4_skip_streak = 0
@@ -166,6 +167,7 @@ class MpptPollDiag:
 
     def note_attempt(self, transport: object) -> None:
         self.poll_attempts += 1
+        self.prefer_fc4_skip_streak = 0
         self.aux_connected = bool(getattr(transport, "connected", True))
 
     def note_ok(self, now: float, *, retried: bool) -> None:
