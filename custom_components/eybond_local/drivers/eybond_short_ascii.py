@@ -138,6 +138,13 @@ class EybondShortAsciiDriver(InverterDriver):
                 responses[command] = (await session.request(command)).hex()
             except (ShortAsciiError, ConnectionError, asyncio.TimeoutError) as exc:
                 failures[command] = type(exc).__name__
+        # Correlated aux 0200 request/reply hex when the facade is available.
+        # Capture is user-initiated evidence, not a stock poll (G.P1).
+        try:
+            from .short_ascii_mppt_optional import capture_runtime_exchange
+            responses.update(await capture_runtime_exchange(transport))
+        except (TypeError, ValueError, ConnectionError, asyncio.TimeoutError) as exc:
+            failures["0200"] = type(exc).__name__
         return {
             "capture_kind": "short_ascii_read_only", "responses_hex": responses,
             "failures": failures,
