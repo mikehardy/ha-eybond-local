@@ -17,7 +17,7 @@ from .command_support import (
 from .short_ascii_battery_dc import battery_dc_power_values
 from .short_ascii_mppt_optional import (
     ADMIT_OPTION_KEY, COMMAND as MPPT_COMMAND, INTERVAL as MPPT_INTERVAL,
-    TTL as MPPT_TTL, is_admitted, request_runtime_sample,
+    TTL as MPPT_TTL, MpptPollDiag, is_admitted, request_runtime_sample,
 )
 from .short_ascii_rb_filter import RbPublishFilter
 
@@ -66,6 +66,8 @@ class OptionalReads:
         OptionalSample(MPPT_COMMAND, interval=MPPT_INTERVAL, ttl=MPPT_TTL, parser=dict),
     ))
     rb_filter: RbPublishFilter = field(default_factory=RbPublishFilter)
+    # Site-WIP quiet stuck-aux counters; survive optional.clear() on Q1 miss.
+    mppt_diag: MpptPollDiag = field(default_factory=MpptPollDiag)
 
     def clear(self) -> None:
         for sample in self.samples:
@@ -160,6 +162,7 @@ class OptionalReads:
         """At most one extra query per successful Q1 cycle; no discovery budget."""
         now = clock()
         mppt_admitted = is_admitted(runtime_state)
+        diag = self.mppt_diag
         for sample in self.samples:
             if sample.command == MPPT_COMMAND and not mppt_admitted:
                 # G.P1: stock installs must not poll aux 0200.
@@ -177,19 +180,30 @@ class OptionalReads:
             elif sample.outcome == "not_admitted" and mppt_admitted:
                 sample.next_due = now
                 sample.outcome = "not_checked"
+        if not mppt_admitted:
+            # Clear reason each cycle; do not invent poll attempts.
+            diag.note_not_admitted(self.transport)
         due = [sample for sample in self.samples
                if sample.outcome not in ("unsupported", "not_admitted")
                and now >= sample.next_due]
+        mppt_due = any(sample.command == MPPT_COMMAND for sample in due)
+        if mppt_admitted:
+            diag.note_due(mppt_due)
         # Oldest due first within the chosen set. Prefer FC4 (RB/F/RH) over aux
         # MPPT when both are due so a virgin MPPT next_due=0 cannot starve an
         # intentional RB refresh; MPPT still runs when it is the only due sample.
         fc4_due = [sample for sample in due if sample.command != MPPT_COMMAND]
+        prefer_fc4_skip = bool(fc4_due) and mppt_due
         candidates = fc4_due or due
         sample = min(candidates, key=lambda item: item.next_due) if candidates else None
+        if prefer_fc4_skip and sample is not None and sample.command != MPPT_COMMAND:
+            diag.note_prefer_fc4_skip()
         if sample is not None:
             key = _PREFIX + sample.command
+            mppt_retried = False
             try:
                 if sample.command == MPPT_COMMAND:
+                    diag.note_attempt(self.transport)
                     try:
                         parsed = await self._request_mppt()
                     except _SOFT_ERRORS:
@@ -197,6 +211,7 @@ class OptionalReads:
                         # retry and no loop. Disconnect skips the second send.
                         if not session.transport.connected:
                             raise
+                        mppt_retried = True
                         parsed = await self._request_mppt()
                 else:
                     frame = await session.request(sample.command)
@@ -212,6 +227,7 @@ class OptionalReads:
                     else "invalid_response"
                 )
                 if sample.command == MPPT_COMMAND:
+                    diag.note_fail(self.transport, exc)
                     # No 30 s penalty: due again next poll. Aux 0200 is flaky
                     # under contention and may fence the socket; never raise
                     # that into Q1 wipe, and never feed the unsupported cache.
@@ -231,6 +247,8 @@ class OptionalReads:
                     sample.outcome = (
                         "no_data" if parsed.get("short_ascii_bms_data_available") is False else "ok"
                     )
+                    if sample.command == MPPT_COMMAND:
+                        diag.note_ok(sample.sampled_at, retried=mppt_retried)
                 record_command_success(runtime_state, key)
         # No staged strike survives a failed/cancelled cycle. Q1 was confirmed
         # by our caller, and from here to commit there are no suspension points.
@@ -259,6 +277,7 @@ class OptionalReads:
             key for key in unsupported_commands(runtime_state) if key.startswith(_PREFIX)
         )
         diagnostics.update(self.rb_filter.diagnostic_counters())
+        diagnostics.update(diag.as_diagnostics(now))
         if not mppt_admitted:
             diagnostics["short_ascii_mppt_admission"] = ADMIT_OPTION_KEY
         return values, diagnostics

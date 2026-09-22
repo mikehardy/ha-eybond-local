@@ -7,9 +7,15 @@ any 0200 poll; ``enabled_default: false`` alone only hides entities.
 Live PV/MPPT measurement keys stay opt-in (``enabled_default: false``);
 quiet ``mppt_error_code`` / ``mppt_error`` diagnostics default on in
 ``eybond_short_ascii/base.json``.
+
+Site-WIP quiet poll instrumentation (``MpptPollDiag``) discriminates stuck-aux
+hypotheses without WARNING spam or healing side effects.
 """
 
 from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
 
 from ..link_transport import async_auxiliary_read
 from ..payload.short_ascii_mppt import mppt_error_label, parse_mppt_runtime_wire
@@ -36,6 +42,11 @@ _VALUE_KEYS = (
     ("mppt_total_energy", "total_energy_kwh"),
     ("mppt_error_code", "fault_code"),
 )
+
+_FAIL_TIMEOUT = "timeout"
+_FAIL_CONNECTION = "connection"
+_FAIL_DECODE = "decode"
+_FAIL_NOT_ADMITTED = "not_admitted"
 
 
 def is_admitted(runtime_state: dict) -> bool:
@@ -81,3 +92,125 @@ async def capture_runtime_exchange(transport: object) -> dict[str, str]:
         "0200_request": RUNTIME_QUERY_0200.hex(),
         "0200": wire.hex() if type(wire) is bytes else "",
     }
+
+
+def classify_mppt_fail(exc: BaseException) -> str:
+    """Map a soft MPPT exception to a quiet fail-class tag (not sample.outcome)."""
+
+    if isinstance(exc, asyncio.TimeoutError):
+        return _FAIL_TIMEOUT
+    if isinstance(exc, ConnectionError):
+        return _FAIL_CONNECTION
+    return _FAIL_DECODE
+
+
+def _collector_disconnect_snapshot(transport: object) -> tuple[int | None, str]:
+    info = getattr(transport, "collector_info", None)
+    if info is None:
+        return None, ""
+    count = getattr(info, "disconnect_count", None)
+    reason = getattr(info, "last_disconnect_reason", "") or ""
+    return (int(count) if isinstance(count, int) else None), str(reason)
+
+
+@dataclass
+class MpptPollDiag:
+    """Quiet counters for stuck-aux discrimination (site-WIP; no healing)."""
+
+    poll_attempts: int = 0
+    poll_ok: int = 0
+    poll_fail: int = 0
+    consecutive_failures: int = 0
+    fail_reason: str = ""
+    fail_timeout: int = 0
+    fail_connection: int = 0
+    fail_decode: int = 0
+    retry_recovered: int = 0
+    not_admitted_cycles: int = 0
+    skipped_prefer_fc4: int = 0
+    due_this_cycle: bool = False
+    last_success_at: float | None = None
+    aux_connected: bool | None = None
+    aux_fence_reason: str = ""
+    aux_last_error: str = ""
+    last_fail_disconnect_count: int | None = None
+    last_fail_disconnect_reason: str = ""
+
+    def note_not_admitted(self, transport: object) -> None:
+        """Admit gate closed: stamp reason, never invent poll attempts."""
+
+        self.not_admitted_cycles += 1
+        self.fail_reason = _FAIL_NOT_ADMITTED
+        self.due_this_cycle = False
+        self.aux_connected = bool(getattr(transport, "connected", True))
+
+    def note_due(self, due: bool) -> None:
+        self.due_this_cycle = due
+
+    def note_prefer_fc4_skip(self) -> None:
+        self.skipped_prefer_fc4 += 1
+
+    def note_attempt(self, transport: object) -> None:
+        self.poll_attempts += 1
+        self.aux_connected = bool(getattr(transport, "connected", True))
+
+    def note_ok(self, now: float, *, retried: bool) -> None:
+        self.poll_ok += 1
+        self.consecutive_failures = 0
+        self.fail_reason = ""
+        self.last_success_at = now
+        self.aux_fence_reason = ""
+        self.aux_last_error = ""
+        if retried:
+            self.retry_recovered += 1
+
+    def note_fail(self, transport: object, exc: BaseException) -> None:
+        reason = classify_mppt_fail(exc)
+        self.poll_fail += 1
+        self.consecutive_failures += 1
+        self.fail_reason = reason
+        if reason == _FAIL_TIMEOUT:
+            self.fail_timeout += 1
+        elif reason == _FAIL_CONNECTION:
+            self.fail_connection += 1
+        else:
+            self.fail_decode += 1
+        connected = bool(getattr(transport, "connected", True))
+        self.aux_connected = connected
+        self.aux_last_error = f"{type(exc).__name__}:{exc}"[:200]
+        self.aux_fence_reason = (
+            "disconnected" if not connected else type(exc).__name__
+        )
+        count, disc_reason = _collector_disconnect_snapshot(transport)
+        self.last_fail_disconnect_count = count
+        self.last_fail_disconnect_reason = disc_reason
+
+    def as_diagnostics(self, now: float) -> dict[str, object]:
+        """Quiet diagnostic keys for the runtime snapshot / HA entities."""
+
+        age: float | None = None
+        if self.last_success_at is not None:
+            age = round(max(0.0, now - self.last_success_at), 3)
+        out: dict[str, object] = {
+            "mppt_poll_attempts": self.poll_attempts,
+            "mppt_poll_ok": self.poll_ok,
+            "mppt_poll_fail": self.poll_fail,
+            "mppt_fail_reason": self.fail_reason,
+            "mppt_fail_timeout": self.fail_timeout,
+            "mppt_fail_connection": self.fail_connection,
+            "mppt_fail_decode": self.fail_decode,
+            "mppt_retry_recovered": self.retry_recovered,
+            "mppt_not_admitted": self.not_admitted_cycles,
+            "mppt_consecutive_failures": self.consecutive_failures,
+            "mppt_due_this_cycle": 1 if self.due_this_cycle else 0,
+            "mppt_skipped_prefer_fc4": self.skipped_prefer_fc4,
+            "mppt_last_success_age_s": age,
+            "aux_connected": self.aux_connected,
+            "aux_fence_reason": self.aux_fence_reason,
+            "aux_last_error": self.aux_last_error,
+        }
+        if self.last_fail_disconnect_count is not None:
+            out["mppt_fail_disconnect_count"] = self.last_fail_disconnect_count
+        if self.last_fail_disconnect_reason:
+            out["mppt_fail_disconnect_reason"] = self.last_fail_disconnect_reason
+        return out
