@@ -192,9 +192,10 @@ class OptionalReads:
         # Oldest due first within the chosen set. Prefer FC4 (RB/F/RH) over aux
         # MPPT when both are due so a virgin MPPT next_due=0 cannot starve an
         # intentional RB refresh; MPPT still runs when it is the only due sample.
-        # H3 anti-starve: RB/MPPT share ~30s. After ≥1 prefer-FC4 skip while RB is
-        # contending and MPPT is stale, force MPPT. F/RH skips must not reset the
-        # RB streak (that previously prevented force from ever firing live).
+        # H3 anti-starve: RB/MPPT share ~30s. While MPPT is stale, the first
+        # RB+MPPT collision takes MPPT (no streak wait). Live wipes recreate
+        # diag often enough that streak≥1 never armed before the next reset.
+        # F/RH collisions still prefer settings/FC4 so cold-start gates run.
         fc4_due = [sample for sample in due if sample.command != MPPT_COMMAND]
         prefer_fc4_skip = bool(fc4_due) and mppt_due
         rb_contending = any(sample.command == "RB" for sample in fc4_due)
@@ -202,12 +203,7 @@ class OptionalReads:
             diag.last_success_at is None
             or (now - diag.last_success_at) > MPPT_TTL
         )
-        force_mppt = (
-            prefer_fc4_skip
-            and rb_contending
-            and mppt_stale
-            and diag.prefer_fc4_skip_streak >= 1
-        )
+        force_mppt = prefer_fc4_skip and rb_contending and mppt_stale
         if force_mppt:
             candidates = [sample for sample in due if sample.command == MPPT_COMMAND]
         else:

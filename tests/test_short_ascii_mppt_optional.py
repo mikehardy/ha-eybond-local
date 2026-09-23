@@ -162,6 +162,10 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         await self.read(0)
         await self.read(1)
         await self.read(2)
+        # Anti-starve may force MPPT on read(0); make MPPT due again and clear
+        # the aux log so later cases own the next 0200 solicit.
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        mppt.next_due = 0
         self.transport.aux_requests.clear()
 
     async def test_stock_install_does_not_poll_0200_without_admission(self):
@@ -173,18 +177,27 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("MPPT=not_admitted", result.diagnostics["short_ascii_optional_status"])
         self.assertEqual(result.diagnostics.get("short_ascii_mppt_admission"), ADMIT_OPTION_KEY)
 
-    async def test_solicits_documented_0200_only_after_rb_f_rh_slot(self):
-        await self._prime_through_rh()
-        result = await self.read(3)
+    async def test_solicits_documented_0200_on_first_stale_rb_collision(self):
+        """H3 anti-starve: first RB+MPPT collision while stale solicits 0200."""
+        result = await self.read(0)
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
         self.assertNotIn(_settings_query(), self.transport.aux_requests)
         self.assertEqual(result.values["pv_voltage"], 120.0)
         self.assertEqual(result.values["pv_power"], 370)
         self.assertIn("MPPT=ok", result.diagnostics["short_ascii_optional_status"])
+        self.assertEqual(result.diagnostics["mppt_forced_anti_starve"], 1)
 
     async def test_ttl_expiry_clears_mppt_without_tip_harvest_fields(self):
         await self._prime_through_rh()
-        await self.read(3)
+        # Prime may already have forced MPPT; pin samples so expiry is observable
+        # without anti-starve re-polling on the aged clock.
+        for sample in self.state[STATE_KEY].samples:
+            sample.next_due = 10_000
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        if mppt.sampled_at is None:
+            mppt.values = {"pv_voltage": 120.0, "pv_power": 370}
+            mppt.sampled_at = 0.0
+            mppt.outcome = "ok"
         expired = await self.read(64)
         self.assertNotIn("pv_voltage", expired.values)
         self.assertNotIn("pv_power", expired.values)
@@ -195,13 +208,13 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_never_sends_settings_0202_even_when_aux_configured(self):
         self.transport.aux_responses[_settings_query()] = runtime_frame(subtype=0x0202).wire
-        await self._prime_through_rh()
-        await self.read(3)
+        result = await self.read(0)
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
+        self.assertNotIn(_settings_query(), self.transport.aux_requests)
+        self.assertEqual(result.values["pv_power"], 370)
 
     async def test_no_tip_harvest_or_waiter_state(self):
-        await self._prime_through_rh()
-        result = await self.read(3)
+        result = await self.read(0)
         reads = self.state[STATE_KEY]
         self.assertFalse(hasattr(reads, "aabb_last_wire"))
         self.assertFalse(hasattr(reads, "aabb_waiter"))
@@ -225,10 +238,11 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.transport.aux_requests.clear()
         self.inverter = replace(self.inverter)
         result = await self.read(4)
-        self.assertNotIn("pv_voltage", result.values)
-        # New binding restarts optional schedule at FC4 RB; no MPPT aux yet.
-        self.assertIn(b"RB\x01\r", self.transport.requests)
-        self.assertEqual(self.transport.aux_requests, [])
+        # New binding rebuilds optional state (no reused samples). H3 anti-starve
+        # then forces 0200 on the first stale RB collision — not a sample reuse.
+        self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
+        self.assertIn("pv_voltage", result.values)
+        self.assertEqual(result.diagnostics["mppt_forced_anti_starve"], 1)
 
     async def test_disconnect_during_mppt_does_not_wipe_q1(self):
         """MPPT fence must not raise from refresh_one / wipe Q1 extras."""
@@ -351,6 +365,7 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         diag = self.state[STATE_KEY].mppt_diag
         # Fresh within TTL → prefer FC4 (anti-starve idle).
         diag.last_success_at = 2.0
+        diag.forced_anti_starve = 0
         diag.reset_prefer_fc4_streak()
         for sample in self.state[STATE_KEY].samples:
             sample.next_due = 3
@@ -363,10 +378,9 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.diagnostics["mppt_forced_anti_starve"], 0)
 
     async def test_prefer_fc4_anti_starve_forces_mppt_when_stale(self):
-        """After ≥1 RB prefer-FC4 skip while stale, next RB collision takes MPPT."""
+        """First RB+MPPT collision while stale takes MPPT (wipe-safe)."""
         await self._prime_through_rh()
         diag = self.state[STATE_KEY].mppt_diag
-        # Normalize post-prime: stale MPPT, empty streak, due again.
         diag.last_success_at = None
         diag.forced_anti_starve = 0
         diag.prefer_fc4_skip_streak = 0
@@ -380,41 +394,38 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
             sample.next_due = 3
         self.transport.requests.clear()
         self.transport.aux_requests.clear()
-        # First RB collision while stale: prefer FC4, streak → 1.
-        first = await self.read(3)
-        self.assertIn(b"RB\x01\r", self.transport.requests)
-        self.assertEqual(self.transport.aux_requests, [])
-        self.assertEqual(first.diagnostics["mppt_skipped_prefer_fc4"], skips_before + 1)
-        self.assertEqual(first.diagnostics["mppt_forced_anti_starve"], 0)
-        self.assertEqual(diag.prefer_fc4_skip_streak, 1)
-        # F/RH contention must not clear the RB streak.
-        for sample in self.state[STATE_KEY].samples:
-            sample.next_due = 4
-        # Hold RB off so F contends alone with MPPT.
-        rb = next(s for s in self.state[STATE_KEY].samples if s.command == "RB")
-        rb.next_due = 10_000
-        self.transport.requests.clear()
-        second = await self.read(4)
-        self.assertEqual(second.diagnostics["mppt_forced_anti_starve"], 0)
-        self.assertEqual(diag.prefer_fc4_skip_streak, 1)
-        # Next RB collision: streak ≥ 1 + stale → force MPPT.
-        for sample in self.state[STATE_KEY].samples:
-            sample.next_due = 5
-        self.transport.requests.clear()
-        self.transport.aux_requests.clear()
-        forced = await self.read(5)
+        # Stale + RB contending → force immediately (no streak wait).
+        forced = await self.read(3)
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
         self.assertNotIn(b"RB\x01\r", self.transport.requests)
         self.assertEqual(forced.values["pv_power"], 370)
         self.assertEqual(forced.diagnostics["mppt_forced_anti_starve"], 1)
         self.assertEqual(forced.diagnostics["mppt_poll_attempts"], 1)
-        self.assertEqual(diag.prefer_fc4_skip_streak, 0)
-        # Fresh MPPT keeps prefer-FC4 on the next RB collision.
+        self.assertEqual(forced.diagnostics["mppt_skipped_prefer_fc4"], skips_before)
+        # F+MPPT without RB still prefers FC4 settings path while stale.
         for sample in self.state[STATE_KEY].samples:
-            sample.next_due = 6
+            sample.next_due = 4
+        rb = next(s for s in self.state[STATE_KEY].samples if s.command == "RB")
+        rb.next_due = 10_000
+        # Mark MPPT stale again for the F collision check.
+        diag.last_success_at = None
+        diag.poll_attempts = 0
+        mppt.clear()
+        mppt.outcome = "not_checked"
+        mppt.next_due = 4
         self.transport.requests.clear()
         self.transport.aux_requests.clear()
-        fresh = await self.read(6)
+        f_pref = await self.read(4)
+        self.assertEqual(self.transport.aux_requests, [])
+        self.assertIn(b"F\x01\r", self.transport.requests)
+        self.assertEqual(f_pref.diagnostics["mppt_forced_anti_starve"], 1)
+        # Fresh MPPT keeps prefer-FC4 on RB collision.
+        diag.last_success_at = 4.0
+        for sample in self.state[STATE_KEY].samples:
+            sample.next_due = 5
+        self.transport.requests.clear()
+        self.transport.aux_requests.clear()
+        fresh = await self.read(5)
         self.assertIn(b"RB\x01\r", self.transport.requests)
         self.assertEqual(self.transport.aux_requests, [])
         self.assertEqual(fresh.diagnostics["mppt_forced_anti_starve"], 1)
