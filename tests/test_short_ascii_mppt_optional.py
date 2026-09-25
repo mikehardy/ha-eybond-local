@@ -16,7 +16,8 @@ from test_short_ascii_mppt import runtime_frame
 from test_short_ascii_optional import _rb, _rh
 from custom_components.eybond_local.drivers.eybond_short_ascii import EybondShortAsciiDriver
 from custom_components.eybond_local.drivers.short_ascii_mppt_optional import (
-    ADMIT_OPTION_KEY, RUNTIME_QUERY_0200, assert_runtime_query_only, values_from_reply,
+    ADMIT_OPTION_KEY, RUNTIME_QUERY_0200, STRUCTURAL_BACKOFF, assert_runtime_query_only,
+    values_from_reply,
 )
 from custom_components.eybond_local.drivers.command_support import unsupported_commands
 from custom_components.eybond_local.drivers.short_ascii_optional import STATE_KEY
@@ -339,6 +340,24 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered.values["pv_power"], 370)
         self.assertIn("MPPT=ok", recovered.diagnostics["short_ascii_optional_status"])
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
+
+    async def test_structural_typeerror_backs_off_without_retry(self):
+        """Missing aux facade: no in-cycle retry; next_due far in the future."""
+        await self._prime_through_rh()
+        for sample in self.state[STATE_KEY].samples:
+            if sample.command != "MPPT":
+                sample.next_due = 10_000
+        self.transport.aux_responses[RUNTIME_QUERY_0200] = TypeError(
+            "unsupported_auxiliary_transport:_Transport",
+        )
+        result = await self.read(3)
+        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
+        self.assertEqual(result.diagnostics.get("mppt_fail_reason"), "structural")
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        self.assertAlmostEqual(mppt.next_due, 3.0 + STRUCTURAL_BACKOFF, delta=1.0)
+        self.assertEqual(unsupported_commands(self.state), ())
+        self.assertEqual(result.diagnostics.get("driver_unsupported_commands"), "")
 
     async def test_mppt_timeouts_never_blacklist_as_unsupported(self):
         """Aux 0200 contention must not persist short_ascii:MPPT forever."""

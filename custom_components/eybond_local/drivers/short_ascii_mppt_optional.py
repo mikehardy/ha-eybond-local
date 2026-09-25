@@ -47,7 +47,12 @@ _VALUE_KEYS = (
 _FAIL_TIMEOUT = "timeout"
 _FAIL_CONNECTION = "connection"
 _FAIL_DECODE = "decode"
+_FAIL_STRUCTURAL = "structural"
 _FAIL_NOT_ADMITTED = "not_admitted"
+# Missing facade / wrong transport class — not a flaky decode. Back off far past
+# the soft next_due=now path so a TypeError cannot storm the poll loop.
+_STRUCTURAL_MARKER = "unsupported_auxiliary_transport"
+STRUCTURAL_BACKOFF = 120.0
 
 
 def is_admitted(runtime_state: dict) -> bool:
@@ -95,6 +100,12 @@ async def capture_runtime_exchange(transport: object) -> dict[str, str]:
     }
 
 
+def is_structural_aux_error(exc: BaseException) -> bool:
+    """True when the facade lacks aux — retrying next_due=now cannot recover."""
+
+    return isinstance(exc, TypeError) and _STRUCTURAL_MARKER in str(exc)
+
+
 def classify_mppt_fail(exc: BaseException) -> str:
     """Map a soft MPPT exception to a quiet fail-class tag (not sample.outcome)."""
 
@@ -102,6 +113,8 @@ def classify_mppt_fail(exc: BaseException) -> str:
         return _FAIL_TIMEOUT
     if isinstance(exc, ConnectionError):
         return _FAIL_CONNECTION
+    if is_structural_aux_error(exc):
+        return _FAIL_STRUCTURAL
     return _FAIL_DECODE
 
 
@@ -190,7 +203,7 @@ class MpptPollDiag:
             self.fail_timeout += 1
         elif reason == _FAIL_CONNECTION:
             self.fail_connection += 1
-        else:
+        elif reason != _FAIL_STRUCTURAL:
             self.fail_decode += 1
         connected = bool(getattr(transport, "connected", True))
         self.aux_connected = connected

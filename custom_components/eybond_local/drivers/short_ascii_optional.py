@@ -17,7 +17,8 @@ from .command_support import (
 from .short_ascii_battery_dc import battery_dc_power_values
 from .short_ascii_mppt_optional import (
     ADMIT_OPTION_KEY, COMMAND as MPPT_COMMAND, INTERVAL as MPPT_INTERVAL,
-    TTL as MPPT_TTL, MpptPollDiag, is_admitted, request_runtime_sample,
+    STRUCTURAL_BACKOFF, TTL as MPPT_TTL, MpptPollDiag, is_admitted,
+    is_structural_aux_error, request_runtime_sample,
 )
 from .short_ascii_rb_filter import RbPublishFilter
 
@@ -221,9 +222,11 @@ class OptionalReads:
                     diag.note_attempt(self.transport)
                     try:
                         parsed = await self._request_mppt()
-                    except _SOFT_ERRORS:
-                        # One in-cycle 0200 retry while the link is up; no FC4
-                        # retry and no loop. Disconnect skips the second send.
+                    except _SOFT_ERRORS as first_exc:
+                        # Structural TypeError cannot recover mid-cycle; flaky
+                        # aux may. Disconnect skips the second send.
+                        if is_structural_aux_error(first_exc):
+                            raise
                         if not session.transport.connected:
                             raise
                         mppt_retried = True
@@ -243,10 +246,14 @@ class OptionalReads:
                 )
                 if sample.command == MPPT_COMMAND:
                     diag.note_fail(self.transport, exc)
-                    # No 30 s penalty: due again next poll. Aux 0200 is flaky
-                    # under contention and may fence the socket; never raise
-                    # that into Q1 wipe, and never feed the unsupported cache.
-                    sample.next_due = clock()
+                    if is_structural_aux_error(exc):
+                        # Missing facade: long backoff, never next_due=now storm.
+                        sample.next_due = clock() + STRUCTURAL_BACKOFF
+                    else:
+                        # No 30 s penalty: due again next poll. Aux 0200 is flaky
+                        # under contention and may fence the socket; never raise
+                        # that into Q1 wipe, and never feed the unsupported cache.
+                        sample.next_due = clock()
                 else:
                     sample.next_due = clock() + 30
                     if isinstance(exc, ConnectionError) or not session.transport.connected:

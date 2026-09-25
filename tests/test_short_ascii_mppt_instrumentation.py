@@ -53,6 +53,10 @@ class ClassifyFailTests(unittest.TestCase):
         self.assertEqual(classify_mppt_fail(ValueError("bad")), "decode")
         self.assertEqual(classify_mppt_fail(ShortAsciiError("x")), "decode")
         self.assertEqual(classify_mppt_fail(TypeError("x")), "decode")
+        self.assertEqual(
+            classify_mppt_fail(TypeError("unsupported_auxiliary_transport:X")),
+            "structural",
+        )
 
 
 class QuietSchemaTests(unittest.TestCase):
