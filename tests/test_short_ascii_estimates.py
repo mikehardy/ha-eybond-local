@@ -118,6 +118,38 @@ class BestAvailableAcLoadEstimateUnitTests(unittest.TestCase):
             "best_available_ac_load_estimate_source": "q1_percent",
         })
 
+    def test_silent_q1_charge_plus_pv_uses_residual(self):
+        """Q1 floor + charging: leftover PV after charge is house AC demand."""
+        out = best_available_ac_load_estimate_values({
+            "load_percent": 0,
+            "estimated_ac_load_power": 0.0,
+            "battery_power": 378.0,
+            "pv_power": 690.0,
+        })
+        self.assertEqual(out, {
+            "best_available_ac_load_estimate": 312.0,
+            "best_available_ac_load_estimate_source": "pv_minus_charge",
+        })
+
+    def test_silent_q1_charge_pv_below_charge_clamps_zero(self):
+        out = best_available_ac_load_estimate_values({
+            "load_percent": 0,
+            "estimated_ac_load_power": 0.0,
+            "battery_power": 500.0,
+            "pv_power": 200.0,
+        })
+        self.assertEqual(out, {
+            "best_available_ac_load_estimate": 0.0,
+            "best_available_ac_load_estimate_source": "pv_minus_charge",
+        })
+
+    def test_reporting_q1_ignores_charge_pv_residual(self):
+        out = best_available_ac_load_estimate_values({
+            **self._Q1, "battery_power": 378.0, "pv_power": 690.0,
+        })
+        self.assertEqual(out["best_available_ac_load_estimate_source"], "q1_percent")
+        self.assertEqual(out["best_available_ac_load_estimate"], 1569.8)
+
     def test_zero_load_percent_with_discharge_uses_bms_dc(self):
         out = best_available_ac_load_estimate_values({
             "load_percent": 0,
