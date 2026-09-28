@@ -72,6 +72,29 @@ class BestAvailableAcLoadEstimateUnitTests(unittest.TestCase):
         self.assertNotIn("load_power", out)
         self.assertNotIn("load_power_source", out)
 
+    def test_discharge_plus_pv_adds_solar_to_bms_dc(self):
+        """Shoulder: pack still discharging while PV is consumed by the house."""
+        out = best_available_ac_load_estimate_values({
+            **self._Q1,
+            "estimated_ac_load_power": 0.0,
+            "load_percent": 0,
+            "battery_power": -403.5,
+            "pv_power": 80.0,
+        })
+        self.assertEqual(out, {
+            "best_available_ac_load_estimate": 483.5,
+            "best_available_ac_load_estimate_source": "bms_dc_plus_pv",
+        })
+
+    def test_discharge_with_zero_pv_stays_bms_dc(self):
+        out = best_available_ac_load_estimate_values({
+            **self._Q1, "battery_power": -403.5, "pv_power": 0,
+        })
+        self.assertEqual(out, {
+            "best_available_ac_load_estimate": 403.5,
+            "best_available_ac_load_estimate_source": "bms_dc",
+        })
+
     def test_charging_uses_q1_percent(self):
         out = best_available_ac_load_estimate_values({
             **self._Q1, "battery_power": 182.0, "pv_power": 200.0,
