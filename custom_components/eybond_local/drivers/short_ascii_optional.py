@@ -18,7 +18,7 @@ from .short_ascii_battery_dc import battery_dc_power_values
 from .short_ascii_mppt_optional import (
     ADMIT_OPTION_KEY, COMMAND as MPPT_COMMAND, INTERVAL as MPPT_INTERVAL,
     STRUCTURAL_BACKOFF, TTL as MPPT_TTL, MpptPollDiag, is_admitted,
-    is_structural_aux_error, request_runtime_sample,
+    should_backoff_mppt_aux, request_runtime_sample,
 )
 from .short_ascii_rb_filter import RbPublishFilter
 
@@ -223,9 +223,9 @@ class OptionalReads:
                     try:
                         parsed = await self._request_mppt()
                     except _SOFT_ERRORS as first_exc:
-                        # Structural TypeError cannot recover mid-cycle; flaky
-                        # aux may. Disconnect skips the second send.
-                        if is_structural_aux_error(first_exc):
+                        # Structural / AABB-ambiguous closes cannot recover
+                        # mid-cycle; flaky aux may. Disconnect skips retry.
+                        if should_backoff_mppt_aux(first_exc, self.transport):
                             raise
                         if not session.transport.connected:
                             raise
@@ -246,8 +246,9 @@ class OptionalReads:
                 )
                 if sample.command == MPPT_COMMAND:
                     diag.note_fail(self.transport, exc)
-                    if is_structural_aux_error(exc):
-                        # Missing facade: long backoff, never next_due=now storm.
+                    if should_backoff_mppt_aux(exc, self.transport):
+                        # Missing facade or MIXED/AABB ambiguity: long backoff
+                        # so next_due=now cannot re-enable MIXED and thrash Q1.
                         sample.next_due = clock() + STRUCTURAL_BACKOFF
                     else:
                         # No 30 s penalty: due again next poll. Aux 0200 is flaky

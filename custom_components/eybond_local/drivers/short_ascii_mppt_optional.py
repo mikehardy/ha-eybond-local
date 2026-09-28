@@ -53,6 +53,9 @@ _FAIL_NOT_ADMITTED = "not_admitted"
 # the soft next_due=now path so a TypeError cannot storm the poll loop.
 _STRUCTURAL_MARKER = "unsupported_auxiliary_transport"
 STRUCTURAL_BACKOFF = 120.0
+# MIXED aux + EyeBond TID 0xAABB closes the whole binary session. Retrying
+# next_due=now re-enables MIXED every poll and thrash-disconnects Q1 too.
+_AMBIGUOUS_DISCONNECT = "binary_frame_ambiguous"
 
 
 def is_admitted(runtime_state: dict) -> bool:
@@ -106,18 +109,6 @@ def is_structural_aux_error(exc: BaseException) -> bool:
     return isinstance(exc, TypeError) and _STRUCTURAL_MARKER in str(exc)
 
 
-def classify_mppt_fail(exc: BaseException) -> str:
-    """Map a soft MPPT exception to a quiet fail-class tag (not sample.outcome)."""
-
-    if isinstance(exc, asyncio.TimeoutError):
-        return _FAIL_TIMEOUT
-    if isinstance(exc, ConnectionError):
-        return _FAIL_CONNECTION
-    if is_structural_aux_error(exc):
-        return _FAIL_STRUCTURAL
-    return _FAIL_DECODE
-
-
 def _collector_disconnect_snapshot(transport: object) -> tuple[int | None, str]:
     info = getattr(transport, "collector_info", None)
     if info is None:
@@ -125,6 +116,33 @@ def _collector_disconnect_snapshot(transport: object) -> tuple[int | None, str]:
     count = getattr(info, "disconnect_count", None)
     reason = getattr(info, "last_disconnect_reason", "") or ""
     return (int(count) if isinstance(count, int) else None), str(reason)
+
+
+def is_ambiguous_aux_disconnect(transport: object) -> bool:
+    """True when the last close was MIXED/AABB vs EyeBond TID ambiguity."""
+
+    _count, reason = _collector_disconnect_snapshot(transport)
+    return reason == _AMBIGUOUS_DISCONNECT
+
+
+def should_backoff_mppt_aux(exc: BaseException, transport: object) -> bool:
+    """True when another immediate 0200 would only re-open the same wound."""
+
+    return is_structural_aux_error(exc) or (
+        isinstance(exc, ConnectionError) and is_ambiguous_aux_disconnect(transport)
+    )
+
+
+def classify_mppt_fail(exc: BaseException) -> str:
+    """Map a soft MPPT exception to a quiet fail-class tag (not sample.outcome)."""
+
+    if isinstance(exc, asyncio.TimeoutError):
+        return _FAIL_TIMEOUT
+    if is_structural_aux_error(exc):
+        return _FAIL_STRUCTURAL
+    if isinstance(exc, ConnectionError):
+        return _FAIL_CONNECTION
+    return _FAIL_DECODE
 
 
 @dataclass

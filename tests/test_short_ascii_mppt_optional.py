@@ -359,6 +359,33 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unsupported_commands(self.state), ())
         self.assertEqual(result.diagnostics.get("driver_unsupported_commands"), "")
 
+    async def test_ambiguous_aux_disconnect_backs_off_without_retry(self):
+        """MIXED/AABB ambiguity closes the session — do not next_due=now thrash."""
+        from custom_components.eybond_local.models import CollectorInfo
+
+        await self._prime_through_rh()
+        for sample in self.state[STATE_KEY].samples:
+            if sample.command != "MPPT":
+                sample.next_due = 10_000
+        self.transport.collector_info = CollectorInfo(
+            collector_pn="I30000200000000001",
+            last_disconnect_reason="binary_frame_ambiguous",
+        )
+        self.transport.aux_responses[RUNTIME_QUERY_0200] = ConnectionError(
+            "collector_disconnected",
+        )
+        result = await self.read(3)
+        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
+        self.assertEqual(result.diagnostics.get("mppt_fail_reason"), "connection")
+        self.assertEqual(
+            result.diagnostics.get("mppt_fail_disconnect_reason"),
+            "binary_frame_ambiguous",
+        )
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        self.assertAlmostEqual(mppt.next_due, 3.0 + STRUCTURAL_BACKOFF, delta=1.0)
+        self.assertEqual(unsupported_commands(self.state), ())
+
     async def test_mppt_timeouts_never_blacklist_as_unsupported(self):
         """Aux 0200 contention must not persist short_ascii:MPPT forever."""
         await self._prime_through_rh()
