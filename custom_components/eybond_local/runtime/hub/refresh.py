@@ -22,6 +22,7 @@ from .common import (
 )
 
 from ...drivers.short_ascii_mppt_optional import ADMIT_OPTION_KEY
+from ...drivers.short_ascii_bms_held import STATE_KEY as _SHORT_ASCII_BMS_HELD_STATE_KEY
 
 
 def _sanitize_probe_routes(value: object) -> list[dict[str, object]]:
@@ -620,8 +621,13 @@ class HubRefreshMixin:
         The unsupported-command set is an empirical device fact persisted in
         the config entry; a reconnect must not forget it and start burning
         timeouts on known-dead commands again.
+
+        Short-ASCII BMS held estimates are also kept: reconnect/RH cold-start
+        often returns V/SoC before currents, and wiping the hold cache opens
+        sub-TTL gaps on battery_power_held_estimate.
         """
 
+        held_bms = self._runtime_read_state.get(_SHORT_ASCII_BMS_HELD_STATE_KEY)
         self._runtime_read_state.clear()
         if self._persistent_unsupported_commands:
             seed_unsupported_commands(
@@ -630,6 +636,8 @@ class HubRefreshMixin:
             )
         if self._admit_short_ascii_mppt:
             self._runtime_read_state[ADMIT_OPTION_KEY] = True
+        if held_bms is not None:
+            self._runtime_read_state[_SHORT_ASCII_BMS_HELD_STATE_KEY] = held_bms
 
     def _record_inverter_detection_probe_log(
         self,
