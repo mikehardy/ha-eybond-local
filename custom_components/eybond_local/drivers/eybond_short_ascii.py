@@ -20,6 +20,7 @@ from .catalog_probe import async_probe_ascii_catalog, catalog_model_name
 from .read_result import DriverReadMode, DriverReadResult
 from .support_marker import DriverSupportMarker
 from .short_ascii_battery_dc import battery_dc_power_values
+from .short_ascii_bms_held import bms_held_for
 from .short_ascii_estimates import (
     best_available_ac_load_estimate_values,
     estimated_ac_load_values,
@@ -134,6 +135,9 @@ class EybondShortAsciiDriver(InverterDriver):
         # Keep pure power keys separate (MX2); composite is labelled separately.
         merged = values | extra
         merged.update(battery_dc_power_values(merged))
+        # Labelled held mirrors: track live BMS; bridge ≤180 s link-loss gaps.
+        # Pure measurement keys stay omit-on-loss (ADR 0003 / MX2).
+        merged.update(bms_held_for(state).apply(merged, clock()))
         merged.update(estimated_ac_load_values(merged))
         merged.update(best_available_ac_load_estimate_values(merged))
         return DriverReadResult(values=merged, mode=DriverReadMode.FULL, diagnostics=diagnostics)

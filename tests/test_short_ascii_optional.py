@@ -204,12 +204,21 @@ class OptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.transport.responses["RB"] = _rb(voltage=0, soc=0)
         result = await self.read(31)
         self.assertFalse(result.values["short_ascii_bms_data_available"])
-        self.assertFalse(any(key.startswith("bms_") for key in result.values))
+        # Pure measurements omit; labelled held estimates bridge ≤180 s.
         self.assertNotIn("battery_soc", result.values)
+        self.assertNotIn("bms_total_voltage", result.values)
+        self.assertFalse(any(
+            key.startswith("bms_") and "held_estimate" not in key
+            for key in result.values
+        ))
+        self.assertEqual(result.values["battery_soc_held_estimate"], 80)
+        self.assertEqual(result.values["bms_held_estimate_mode"], "held")
         self.transport.responses["RB"] = _rb(soc=0)
         recovered = await self.read(62)
         self.assertEqual(recovered.values["battery_soc"], 0)
         self.assertTrue(recovered.values["short_ascii_bms_data_available"])
+        self.assertEqual(recovered.values["battery_soc_held_estimate"], 0)
+        self.assertEqual(recovered.values["bms_held_estimate_mode"], "live")
 
     async def test_missing_rb_does_not_block_f_and_repeated_failures_use_existing_recheck(self):
         self.transport.responses["RB"] = b"NAK\r"
@@ -290,7 +299,13 @@ class OptionalReadTests(unittest.IsolatedAsyncioTestCase):
         result = await self.read(31)
         self.assertEqual(result.values["grid_voltage"], 230)
         self.assertNotIn("battery_soc", result.values)
-        self.assertFalse(any(key.startswith("bms_") for key in result.values))
+        self.assertNotIn("bms_total_voltage", result.values)
+        self.assertFalse(any(
+            key.startswith("bms_") and "held_estimate" not in key
+            for key in result.values
+        ))
+        # Held bridge may still publish last-good while measurement keys stay omitted.
+        self.assertEqual(result.values.get("battery_soc_held_estimate"), 80)
         self.assertIn("RB=invalid_response", result.diagnostics["short_ascii_optional_status"])
 
     async def test_sample_can_expire_while_another_group_is_awaited(self):
