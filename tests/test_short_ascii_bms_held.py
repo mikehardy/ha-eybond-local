@@ -68,7 +68,37 @@ class BmsHeldEstimateUnitTests(unittest.TestCase):
         held.apply(_live(), now=0.0)
         self.assertEqual(held.apply({"short_ascii_bms_data_available": False}, now=HELD_TTL_S), {})
         self.assertEqual(held.values, {})
-        self.assertIsNone(held.sampled_at)
+        self.assertEqual(held.key_sampled_at, {})
+
+    def test_partial_live_keeps_last_battery_power(self):
+        """RH/F gate omits currents: do not wipe last-good watts from the hold cache."""
+        held = BmsHeldEstimates()
+        held.apply(_live(), now=0.0)
+        partial = {
+            "short_ascii_bms_data_available": True,
+            "bms_total_voltage": 52.7,
+            "battery_soc": 56,
+            # no charging/discharging/battery_power this cycle
+        }
+        out = held.apply(partial, now=30.0)
+        self.assertEqual(out["bms_held_estimate_mode"], "live_partial")
+        self.assertEqual(out["bms_total_voltage_held_estimate"], 52.7)
+        self.assertEqual(out["battery_soc_held_estimate"], 56)
+        self.assertEqual(out["battery_power_held_estimate"], 326.1)
+        self.assertEqual(out["bms_charging_current_held_estimate"], 6.2)
+        self.assertGreater(out["bms_held_estimate_age_seconds"], 0.0)
+
+    def test_partial_then_link_loss_still_holds_power(self):
+        held = BmsHeldEstimates()
+        held.apply(_live(), now=0.0)
+        held.apply({
+            "short_ascii_bms_data_available": True,
+            "bms_total_voltage": 52.7,
+            "battery_soc": 56,
+        }, now=20.0)
+        out = held.apply({"short_ascii_bms_data_available": False}, now=50.0)
+        self.assertEqual(out["bms_held_estimate_mode"], "held")
+        self.assertEqual(out["battery_power_held_estimate"], 326.1)
 
     def test_live_without_voltage_does_not_seed(self):
         held = BmsHeldEstimates()

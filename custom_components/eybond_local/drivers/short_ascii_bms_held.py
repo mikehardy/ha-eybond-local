@@ -5,6 +5,9 @@ MX2/ADR 0003: measurement keys stay omit-on-loss (never look fresh). These
 for best-available load imputation.
 
 TTL 180 s ≈ site p90–p95 BMS-unavailable gap coverage without holding forever.
+
+Partial live RB (V/SoC present, currents RH-gated) must **merge** into the
+cache — never replace it — or battery_power_held is wiped while mode stays live.
 """
 
 from __future__ import annotations
@@ -38,6 +41,13 @@ BINARY_HOLD_KEYS = frozenset({
     "short_ascii_bms_discharge_path_enabled",
 })
 
+# Currents / DC watts may be absent while V/SoC remain live (RH/F gate).
+_CURRENT_POWER_HOLD_KEYS = frozenset({
+    "bms_charging_current",
+    "bms_discharging_current",
+    "battery_power",
+})
+
 
 def held_estimate_key(source_key: str) -> str:
     return f"{source_key}_held_estimate"
@@ -56,38 +66,64 @@ def _live_bms_snapshot(values: dict[str, object]) -> dict[str, object] | None:
 
 @dataclass
 class BmsHeldEstimates:
-    """Runtime cache of last-good BMS fields (not persisted)."""
+    """Runtime cache of last-good BMS fields (not persisted).
+
+    Per-key ``sampled_at`` so RH-gated omission of currents does not expire V/SoC
+    or wipe last-good watts before the 180 s hold TTL.
+    """
 
     values: dict[str, object] = field(default_factory=dict)
-    sampled_at: float | None = None
+    key_sampled_at: dict[str, float] = field(default_factory=dict)
 
     def clear(self) -> None:
         self.values.clear()
-        self.sampled_at = None
+        self.key_sampled_at.clear()
+
+    def _expire(self, now: float) -> None:
+        expired = [
+            key for key, sampled in self.key_sampled_at.items()
+            if not 0.0 <= now - sampled < HELD_TTL_S
+        ]
+        for key in expired:
+            self.values.pop(key, None)
+            self.key_sampled_at.pop(key, None)
 
     def apply(self, live_values: dict[str, object], now: float) -> dict[str, object]:
         """Publish ``*_held_estimate`` mirrors (live) or holds (gap ≤ TTL)."""
         live = _live_bms_snapshot(live_values)
         if live is not None:
-            self.values = dict(live)
-            self.sampled_at = now
+            # Merge: keep last-good currents/power when this cycle omits them.
+            for key, value in live.items():
+                self.values[key] = value
+                self.key_sampled_at[key] = now
             mode = "live"
-            age = 0.0
-        elif (
-            self.sampled_at is not None
-            and self.values
-            and 0.0 <= now - self.sampled_at < HELD_TTL_S
-        ):
-            mode = "held"
-            age = now - self.sampled_at
         else:
+            mode = "held"
+
+        self._expire(now)
+        if not self.values:
             self.clear()
             return {}
 
-        out: dict[str, object] = {
-            held_estimate_key(key): value for key, value in self.values.items()
-        }
-        out["bms_held_estimate_age_seconds"] = round(age, 1)
+        out: dict[str, object] = {}
+        ages: list[float] = []
+        any_held = False
+        for key, value in self.values.items():
+            sampled = self.key_sampled_at.get(key, now)
+            age = max(0.0, now - sampled)
+            ages.append(age)
+            out[held_estimate_key(key)] = value
+            if key not in (live or ()) and age > 0:
+                any_held = True
+        if mode == "live" and any_held and any(
+            key in self.values and key not in (live or ())
+            for key in _CURRENT_POWER_HOLD_KEYS
+        ):
+            # Live pack link, but watts/currents are held from last RH-gated sample.
+            mode = "live_partial"
+        elif mode == "held":
+            pass
+        out["bms_held_estimate_age_seconds"] = round(max(ages) if ages else 0.0, 1)
         out["bms_held_estimate_mode"] = mode
         return out
 
