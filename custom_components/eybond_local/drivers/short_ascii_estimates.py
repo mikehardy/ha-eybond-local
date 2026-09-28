@@ -3,21 +3,20 @@
 MX2: %×VA watts are an estimate, never measured active power. Keep wire load%
 intact; do not publish tip-style ``load_power`` / silent source swaps here.
 ``best_available_ac_load_estimate`` is an explicitly labelled composite for
-dashboards. Priority (first match wins), only after Q1 is silent (≤ 0 W):
-(1) Q1 %×VA when reporting load (> 0 W) → ``q1_percent``;
-(2) net BMS discharge ≤ −25 W → ``bms_dc``, or ``bms_dc_plus_pv`` when PV > 0;
-(3) net BMS charge (> 0 W) with PV > 0 → ``max(0, pv − charge)`` as
-    ``pv_minus_charge``;
-(4) else Q1 including 0 W, or omit. Never rewrites pure keys.
+dashboards:
+
+(1) Q1 %×VA when the inverter reports load (> 0 W) → ``q1_percent`` (only hard stop);
+(2) else energy balance from known BMS watts (+ PV):
+    ``P_house ≈ max(0, P_pv − P_battery)`` with pack sign +charge / −discharge
+    → ``bms_dc`` / ``bms_dc_plus_pv`` / ``pv_minus_charge`` / ``pv_idle``;
+(3) else PV alone if BMS watts missing → ``pv_only``;
+(4) else Q1 including 0 W, or omit.
 
 BMS watts prefer live ``battery_power``; if omitted (link-loss), fall back to
 ``battery_power_held_estimate`` (≤180 s) and tag source with ``_held``.
 """
 
 from __future__ import annotations
-
-# Tip MX2-honest net-discharge floor: idle/charge pack power is not AC load.
-_NET_DISCHARGE_THRESHOLD_W = -25.0
 
 
 def estimated_ac_load_values(values: dict[str, object]) -> dict[str, object]:
@@ -54,18 +53,29 @@ def _battery_watts(values: dict[str, object]) -> tuple[float | None, bool]:
     return None, False
 
 
+def _pv_watts(values: dict[str, object]) -> float:
+    pv_w = values.get("pv_power")
+    if isinstance(pv_w, (int, float)) and float(pv_w) > 0:
+        return float(pv_w)
+    return 0.0
+
+
+def _balance_source(battery_w: float, pv_w: float) -> str:
+    """Diagnostic label for ``max(0, pv − battery)`` (battery +charge / −discharge)."""
+    if battery_w < 0:
+        return "bms_dc_plus_pv" if pv_w > 0 else "bms_dc"
+    if battery_w > 0:
+        return "pv_minus_charge"
+    return "pv_idle" if pv_w > 0 else "balance_zero"
+
+
 def best_available_ac_load_estimate_values(values: dict[str, object]) -> dict[str, object]:
     """Composite dashboard estimate for house AC demand.
 
-    Prefer ``estimated_ac_load_power`` when already present; otherwise compute the
-    same load% × rated VA. Never rewrite pure measurement/estimate keys.
+    Only a reporting Q1 load (> 0 W) stops BMS/PV inference. Otherwise:
 
-    BMS / PV imputes run only when Q1 reports 0 W / is missing — Q1 is the
-    house-AC signal when the inverter publishes load. Silent-Q1 cases:
-
-    - Discharging: ``|battery|`` (+ PV if PV > 0; PV is consumed, not stored).
-    - Charging + PV: ``max(0, pv − charge)`` — leftover PV after the pack takes
-      what it can is house load (BMS/inverter loss may slightly inflate this).
+    ``P_house ≈ max(0, P_pv − P_battery)`` with BMS sign +charge / −discharge
+    (so PV 500 W + 100 W discharge → 600 W). Idle pack + PV → full PV.
 
     Battery watts use live ``battery_power`` when present; otherwise the labelled
     ``battery_power_held_estimate`` bridge across BMS link-loss gaps.
@@ -79,30 +89,24 @@ def best_available_ac_load_estimate_values(values: dict[str, object]) -> dict[st
         }
 
     battery_w, from_held = _battery_watts(values)
-    pv_w = values.get("pv_power")
+    pv_w = _pv_watts(values)
     held_tag = "_held" if from_held else ""
 
-    if battery_w is not None and battery_w <= _NET_DISCHARGE_THRESHOLD_W:
-        discharge_w = abs(battery_w)
-        if isinstance(pv_w, (int, float)) and float(pv_w) > 0:
-            return {
-                "best_available_ac_load_estimate": round(discharge_w + float(pv_w), 1),
-                "best_available_ac_load_estimate_source": f"bms_dc_plus_pv{held_tag}",
-            }
+    if battery_w is not None:
+        # P_house ≈ P_pv − P_batt  (+charge stores PV; −discharge adds to house).
+        estimate = max(0.0, round(pv_w - battery_w, 1))
         return {
-            "best_available_ac_load_estimate": round(discharge_w, 1),
-            "best_available_ac_load_estimate_source": f"bms_dc{held_tag}",
+            "best_available_ac_load_estimate": estimate,
+            "best_available_ac_load_estimate_source": (
+                f"{_balance_source(battery_w, pv_w)}{held_tag}"
+            ),
         }
 
-    if (
-        battery_w is not None
-        and battery_w > 0
-        and isinstance(pv_w, (int, float))
-        and float(pv_w) > 0
-    ):
+    if pv_w > 0:
+        # Pack watts missing; still better than publishing a silent Q1 zero.
         return {
-            "best_available_ac_load_estimate": max(0.0, round(float(pv_w) - battery_w, 1)),
-            "best_available_ac_load_estimate_source": f"pv_minus_charge{held_tag}",
+            "best_available_ac_load_estimate": round(pv_w, 1),
+            "best_available_ac_load_estimate_source": "pv_only",
         }
 
     if q1_w is not None:
