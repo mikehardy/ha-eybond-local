@@ -86,8 +86,9 @@ class BatteryDcDriverTests(unittest.IsolatedAsyncioTestCase):
         # 52.0 V × (0 − 29) = −1508.0 W measured DC
         self.assertEqual(gated.values["battery_power"], -1508.0)
         self.assertEqual(gated.values["estimated_ac_load_power"], 1569.8)
-        self.assertEqual(gated.values["best_available_ac_load_estimate"], 1508.0)
-        self.assertEqual(gated.values["best_available_ac_load_estimate_source"], "bms_dc")
+        # Q1 is reporting real load — prefer it over BMS impute.
+        self.assertEqual(gated.values["best_available_ac_load_estimate"], 1569.8)
+        self.assertEqual(gated.values["best_available_ac_load_estimate_source"], "q1_percent")
         self.assertNotIn("load_power", gated.values)
         self.assertNotEqual(
             gated.values["battery_power"], gated.values["estimated_ac_load_power"],

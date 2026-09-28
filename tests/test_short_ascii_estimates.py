@@ -61,21 +61,32 @@ class BestAvailableAcLoadEstimateUnitTests(unittest.TestCase):
         "estimated_ac_load_power": 1569.8,
     }
 
-    def test_discharge_uses_bms_dc(self):
+    def test_q1_reporting_wins_over_bms_discharge(self):
+        """When Q1 publishes real load, do not rewrite it with BMS (± PV)."""
         out = best_available_ac_load_estimate_values({
-            **self._Q1, "battery_power": -1300.5,
+            **self._Q1, "battery_power": -1300.5, "pv_power": 200.0,
+        })
+        self.assertEqual(out, {
+            "best_available_ac_load_estimate": 1569.8,
+            "best_available_ac_load_estimate_source": "q1_percent",
+        })
+        self.assertNotIn("load_power", out)
+        self.assertNotIn("load_power_source", out)
+
+    def test_silent_q1_discharge_uses_bms_dc(self):
+        out = best_available_ac_load_estimate_values({
+            "load_percent": 0,
+            "estimated_ac_load_power": 0.0,
+            "battery_power": -1300.5,
         })
         self.assertEqual(out, {
             "best_available_ac_load_estimate": 1300.5,
             "best_available_ac_load_estimate_source": "bms_dc",
         })
-        self.assertNotIn("load_power", out)
-        self.assertNotIn("load_power_source", out)
 
     def test_discharge_plus_pv_adds_solar_to_bms_dc(self):
-        """Shoulder: pack still discharging while PV is consumed by the house."""
+        """Shoulder: Q1 silent, pack discharging, PV consumed by the house."""
         out = best_available_ac_load_estimate_values({
-            **self._Q1,
             "estimated_ac_load_power": 0.0,
             "load_percent": 0,
             "battery_power": -403.5,
@@ -88,7 +99,10 @@ class BestAvailableAcLoadEstimateUnitTests(unittest.TestCase):
 
     def test_discharge_with_zero_pv_stays_bms_dc(self):
         out = best_available_ac_load_estimate_values({
-            **self._Q1, "battery_power": -403.5, "pv_power": 0,
+            "load_percent": 0,
+            "estimated_ac_load_power": 0.0,
+            "battery_power": -403.5,
+            "pv_power": 0,
         })
         self.assertEqual(out, {
             "best_available_ac_load_estimate": 403.5,
@@ -118,17 +132,29 @@ class BestAvailableAcLoadEstimateUnitTests(unittest.TestCase):
         })
 
     def test_net_discharge_threshold_is_neg_25(self):
+        silent = {
+            "load_percent": 0,
+            "estimated_ac_load_power": 0.0,
+        }
         at = best_available_ac_load_estimate_values({
-            **self._Q1, "battery_power": -25.0,
+            **silent, "battery_power": -25.0,
         })
         self.assertEqual(at["best_available_ac_load_estimate_source"], "bms_dc")
         self.assertEqual(at["best_available_ac_load_estimate"], 25.0)
 
         above = best_available_ac_load_estimate_values({
-            **self._Q1, "battery_power": -24.9,
+            **silent, "battery_power": -24.9,
         })
+        # No useful Q1 and above discharge floor → fall through to Q1 0 W.
         self.assertEqual(above["best_available_ac_load_estimate_source"], "q1_percent")
-        self.assertEqual(above["best_available_ac_load_estimate"], 1569.8)
+        self.assertEqual(above["best_available_ac_load_estimate"], 0.0)
+
+        # Reporting Q1 still wins even at the discharge floor.
+        reporting = best_available_ac_load_estimate_values({
+            **self._Q1, "battery_power": -25.0,
+        })
+        self.assertEqual(reporting["best_available_ac_load_estimate_source"], "q1_percent")
+        self.assertEqual(reporting["best_available_ac_load_estimate"], 1569.8)
 
     def test_idle_light_discharge_uses_q1(self):
         out = best_available_ac_load_estimate_values({
