@@ -1591,6 +1591,37 @@ class _SharedEybondListener:
                 return True
         return False
 
+    def _should_adopt_silent_as_framed(self, pending: _PendingCollectorSocket) -> bool:
+        """Whether an empty sniff should start framed ``run`` instead of parking.
+
+        After a framing close the dongle often redials and waits for the server
+        to speak first. Parking that socket leaves TCP ESTAB with no heartbeat
+        and every short-ASCII entity unavailable (site F8). When this listener
+        already knows the peer as framed — a payload owner for the IP, or a
+        recent framed session from that IP — and no AT owner is also registered
+        for that peer, adopt immediately so heartbeat is written. If both framed
+        and AT owners share the IP (same NAT), keep the park/identity path so a
+        silent AT redial is not forced into framed ``connection.run``.
+        Transparent-route reservations must stay parked for exclusive claiming;
+        AT+ greeting bytes still follow the existing classifier.
+        """
+
+        if self._reserved_for_transparent_route(pending):
+            return False
+        remote_ip = str(pending.remote_ip or "").strip()
+        if not remote_ip:
+            return False
+        if self._has_owner_for_remote_ip(self._at_owner_counts, remote_ip):
+            return False
+        if self._has_owner_for_remote_ip(self._payload_owner_counts, remote_ip):
+            return True
+        if self._last_connection_ip and self._callback_ip_matches_collector(
+            self._last_connection_ip,
+            remote_ip,
+        ):
+            return True
+        return False
+
     def _has_owner_for_collector_pn(
         self,
         owner_counts: dict[str, int],
@@ -2070,6 +2101,10 @@ class _SharedEybondListener:
                             "exclusive_route_silent",
                         )
                         continue
+                    # Known framed peer that stays silent after redial: skip the
+                    # identity probe and let sniff start framed run (heartbeat).
+                    if self._should_adopt_silent_as_framed(pending):
+                        return b"", False
                     chunk = await self._async_probe_pending_identity(pending)
                     return chunk, False
                 except Exception:
@@ -2264,6 +2299,55 @@ class _SharedEybondListener:
             if pn:
                 return frame, pn, source
 
+    async def _activate_silent_framed_pending(
+        self,
+        pending: _PendingCollectorSocket,
+    ) -> None:
+        """Start framed ``run`` for a silent socket we already know as framed.
+
+        Creates a fresh connection object when the prior session is still in
+        ``_session_payload_connections`` (its ``wait_closed`` may still be
+        running). That avoids blocking the new handshake on the old teardown.
+        """
+
+        if not self._pending_socket_still_registered(pending):
+            return
+
+        self._remove_pending_socket(pending)
+        if self._last_pending_ip == pending.remote_ip:
+            self._last_pending_ip = ""
+
+        connection = self._connections.get(pending.remote_ip)
+        if connection is None:
+            connection = self._resolve_public_placeholder_alias(pending.remote_ip)
+        if connection is None or not self._connection_is_unbound_placeholder(
+            connection,
+            self._session_payload_connections,
+        ):
+            connection = _CollectorConnection(
+                remote_ip_hint=pending.remote_ip,
+                heartbeat_interval=60.0,
+                write_timeout=1.5,
+            )
+        else:
+            connection.set_heartbeat_interval(60.0)
+            connection.set_write_timeout(1.5)
+
+        self._connections[pending.remote_ip] = connection
+        if pending.session_id:
+            self._session_payload_connections[pending.session_id] = connection
+        self._last_connection_ip = pending.remote_ip
+        self._mark_session_state(pending.session_id, "routed_framed")
+        await connection.run(
+            pending.reader,
+            pending.writer,
+            initial_bytes=b"",
+            session_id=pending.session_id,
+            session_identity_callback=self._mark_session_identity,
+            session_closed_callback=self._mark_socket_session_closed,
+            disconnect_callback=self._drop_connection_indexes_for_connection,
+        )
+
     async def _sniff_pending_socket(self, pending: _PendingCollectorSocket) -> None:
         chunk, exhausted = await self._read_pending_initial_chunk(pending)
 
@@ -2272,17 +2356,24 @@ class _SharedEybondListener:
 
         if not chunk:
             if not exhausted:
+                if self._reserved_for_transparent_route(pending):
+                    # Exclusive transparent routes must stay parked / claimable.
+                    await self._park_unclaimed_pending_socket(
+                        pending,
+                        b"",
+                        session_state="waiting_for_exclusive_route",
+                    )
+                    return
+                if self._should_adopt_silent_as_framed(pending):
+                    await self._activate_silent_framed_pending(pending)
+                    return
                 # No identity yet, but the socket must stay WATCHED: an
                 # unwatched registered socket never notices a peer close, and
                 # a dead entry blocks same-IP routing as a phantom duplicate.
                 await self._park_unclaimed_pending_socket(
                     pending,
                     b"",
-                    session_state=(
-                        "waiting_for_exclusive_route"
-                        if self._reserved_for_transparent_route(pending)
-                        else "parked_waiting_for_identity"
-                    ),
+                    session_state="parked_waiting_for_identity",
                 )
                 return
             self._remove_pending_socket(pending)
