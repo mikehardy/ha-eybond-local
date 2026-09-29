@@ -10,12 +10,14 @@ quiet ``mppt_error_code`` / ``mppt_error`` diagnostics default on in
 
 Site-WIP quiet poll instrumentation (``MpptPollDiag``) discriminates stuck-aux
 hypotheses without WARNING spam. Prefer-FC4 anti-starve is a minimal schedule
-heal when MPPT goes stale under repeated FC4 preference.
+heal when MPPT goes stale under repeated FC4 preference — gated by explicit
+channel health on ``runtime_state`` (not inside ``OptionalReads``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 
 from ..link_transport import async_auxiliary_read
@@ -26,6 +28,8 @@ RUNTIME_QUERY_0200 = b"\x5a\xa5\x02\x00" + bytes(16) + b"\x02"
 COMMAND = "MPPT"
 # Config-entry options / runtime_state key. Default absent/false = no poll.
 ADMIT_OPTION_KEY = "admit_short_ascii_mppt"
+# Explicit channel health; survives OptionalReads rebuild on transport/clock.
+HEALTH_KEY = "short_ascii_mppt_health"
 REQUEST_TIMEOUT = 4.0
 # Live PV cadence matches RB: refresh often, expire before the next RB window.
 INTERVAL = 30.0
@@ -53,9 +57,16 @@ _FAIL_NOT_ADMITTED = "not_admitted"
 # the soft next_due=now path so a TypeError cannot storm the poll loop.
 _STRUCTURAL_MARKER = "unsupported_auxiliary_transport"
 STRUCTURAL_BACKOFF = 120.0
-# MIXED aux + EyeBond TID 0xAABB closes the whole binary session. Retrying
-# next_due=now re-enables MIXED every poll and thrash-disconnects Q1 too.
-_AMBIGUOUS_DISCONNECT = "binary_frame_ambiguous"
+# MIXED framing kills that must poison (not in-cycle retry). Latch survives
+# run() clearing last_disconnect_reason on reconnect.
+_FRAMING_KILL_REASONS = frozenset({
+    "binary_frame_ambiguous",
+    "aabb_checksum_invalid",
+})
+
+HEALTH_HEALTHY = "healthy"
+HEALTH_RETRY_ONCE = "retry_once"
+HEALTH_POISONED = "poisoned"
 
 
 def is_admitted(runtime_state: dict) -> bool:
@@ -118,19 +129,98 @@ def _collector_disconnect_snapshot(transport: object) -> tuple[int | None, str]:
     return (int(count) if isinstance(count, int) else None), str(reason)
 
 
-def is_ambiguous_aux_disconnect(transport: object) -> bool:
-    """True when the last close was MIXED/AABB vs EyeBond TID ambiguity."""
+def peek_mppt_framing_failure_latch(transport: object) -> str:
+    """Read the MIXED framing-kill latch without clearing it.
 
-    _count, reason = _collector_disconnect_snapshot(transport)
-    return reason == _AMBIGUOUS_DISCONNECT
+    Prefer a facade ``peek_mppt_framing_failure_latch`` (live collector, works
+    after disconnect). Test doubles fall back to the mutable
+    ``collector_info`` attribute.
+    """
+
+    peeker = getattr(transport, "peek_mppt_framing_failure_latch", None)
+    if callable(peeker):
+        return str(peeker() or "")
+    info = getattr(transport, "collector_info", None)
+    if info is None:
+        return ""
+    return str(getattr(info, "mppt_framing_failure_latch", "") or "")
 
 
-def should_backoff_mppt_aux(exc: BaseException, transport: object) -> bool:
-    """True when another immediate 0200 would only re-open the same wound."""
+def take_mppt_framing_failure_latch(transport: object) -> str:
+    """Read and clear the MIXED framing-kill latch (live object, not a snapshot).
 
-    return is_structural_aux_error(exc) or (
-        isinstance(exc, ConnectionError) and is_ambiguous_aux_disconnect(transport)
-    )
+    Production facades expose ``take_mppt_framing_failure_latch`` so a copied
+    ``collector_info`` cannot leave the live latch stuck. Test doubles that
+    hang a mutable ``CollectorInfo`` on the transport fall back to clearing
+    that attribute directly.
+    """
+
+    taker = getattr(transport, "take_mppt_framing_failure_latch", None)
+    if callable(taker):
+        return str(taker() or "")
+    info = getattr(transport, "collector_info", None)
+    if info is None:
+        return ""
+    reason = getattr(info, "mppt_framing_failure_latch", "") or ""
+    if hasattr(info, "mppt_framing_failure_latch"):
+        info.mppt_framing_failure_latch = ""
+    return str(reason)
+
+
+def is_framing_kill_latch(reason: str) -> bool:
+    return reason in _FRAMING_KILL_REASONS
+
+
+@dataclass
+class MpptHealth:
+    """Explicit aux-channel health on runtime_state (not inside OptionalReads).
+
+    States: healthy | retry_once (in-cycle only) | poisoned (monotonic deadline).
+    """
+
+    state: str = HEALTH_HEALTHY
+    poisoned_until: float = 0.0  # time.monotonic() deadline while poisoned
+
+    def is_poisoned(self, mono: float | None = None) -> bool:
+        if self.state != HEALTH_POISONED:
+            return False
+        now = time.monotonic() if mono is None else mono
+        return now < self.poisoned_until
+
+    def mark_healthy(self) -> None:
+        self.state = HEALTH_HEALTHY
+        self.poisoned_until = 0.0
+
+    def mark_retry_once(self) -> None:
+        self.state = HEALTH_RETRY_ONCE
+
+    def mark_poisoned(self, *, mono: float | None = None) -> None:
+        """Set poisoned_until before any further await (structural / framing kill)."""
+
+        now = time.monotonic() if mono is None else mono
+        self.state = HEALTH_POISONED
+        self.poisoned_until = now + STRUCTURAL_BACKOFF
+
+
+def mppt_health_for(runtime_state: dict) -> MpptHealth:
+    """Return channel health; rebuild of OptionalReads must not drop this."""
+
+    health = runtime_state.get(HEALTH_KEY)
+    if type(health) is not MpptHealth:
+        health = MpptHealth()
+        runtime_state[HEALTH_KEY] = health
+    return health
+
+
+def should_poison_mppt_aux(exc: BaseException, framing_latch: str) -> bool:
+    """True when another immediate 0200 would only reopen a structural wound.
+
+    A framing latch is poison regardless of the soft exception shape (TimeoutError
+    included). Do not require ConnectionError — take-clearing the latch and then
+    treating the miss as a flaky timeout would discard the kill.
+    """
+
+    return is_structural_aux_error(exc) or is_framing_kill_latch(framing_latch)
 
 
 def classify_mppt_fail(exc: BaseException) -> str:
