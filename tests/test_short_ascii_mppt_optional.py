@@ -325,7 +325,10 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
             "collector_disconnected",
         )
         result = await self.read(3)
-        self.assertNotIn("pv_power", result.values)
+        # Soft framing poison holds last-good PV until TTL; does not invent fields.
+        self.assertEqual(result.values["pv_voltage"], 120.0)
+        self.assertEqual(result.values["pv_power"], 370)
+        self.assertIn("MPPT=timeout", result.diagnostics["short_ascii_optional_status"])
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
         self.assertEqual(self.transport.collector_info.mppt_framing_failure_latch, "")
         health = self.state[HEALTH_KEY]
@@ -354,7 +357,9 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         )
         self.transport.aux_responses[RUNTIME_QUERY_0200] = asyncio.TimeoutError()
         result = await self.read(3)
-        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(result.values["pv_voltage"], 120.0)
+        self.assertEqual(result.values["pv_power"], 370)
+        self.assertIn("MPPT=timeout", result.diagnostics["short_ascii_optional_status"])
         # Latch is poison — no in-cycle second 0200.
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
         self.assertEqual(self.transport.collector_info.mppt_framing_failure_latch, "")
@@ -483,7 +488,9 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
 
         self.transport.async_send_auxiliary_read = flaky_then_framing_kill
         result = await self.read(3)
-        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(result.values["pv_voltage"], 120.0)
+        self.assertEqual(result.values["pv_power"], 370)
+        self.assertIn("MPPT=timeout", result.diagnostics["short_ascii_optional_status"])
         self.assertEqual(
             self.transport.aux_requests,
             [RUNTIME_QUERY_0200, RUNTIME_QUERY_0200],
@@ -511,7 +518,8 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.transport.connected = False
         result = await self.read(3)
         self.assertEqual(result.values["grid_voltage"], 230.0)
-        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(result.values["pv_voltage"], 120.0)
+        self.assertEqual(result.values["pv_power"], 370)
         self.assertIn("MPPT=timeout", result.diagnostics["short_ascii_optional_status"])
         mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
         self.assertAlmostEqual(mppt.next_due, 3.0, delta=1.0)
@@ -535,14 +543,15 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.values["grid_voltage"], 230.0)
         self.assertEqual(result.values["battery_soc"], 80)
         self.assertEqual(result.values["short_ascii_rated_voltage"], 115)
-        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(result.values["pv_voltage"], 120.0)
+        self.assertEqual(result.values["pv_power"], 370)
         self.assertIn("MPPT=timeout", result.diagnostics["short_ascii_optional_status"])
         mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
         self.assertAlmostEqual(mppt.next_due, 3.0, delta=1.0)
         self.assertEqual(unsupported_commands(self.state), ())
         self.assertEqual(result.diagnostics.get("driver_unsupported_commands"), "")
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200, RUNTIME_QUERY_0200])
-        # Direct fence while down: still soft, one attempt, no wipe.
+        # Direct fence while down: still soft, one attempt, no wipe of Q1/FC4/held MPPT.
         self.transport.aux_requests.clear()
         self.transport.aux_responses[RUNTIME_QUERY_0200] = ConnectionError(
             "collector_not_connected",
@@ -552,7 +561,8 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fenced.values["grid_voltage"], 230.0)
         self.assertEqual(fenced.values["battery_soc"], 80)
         self.assertEqual(fenced.values["short_ascii_rated_voltage"], 115)
-        self.assertNotIn("pv_power", fenced.values)
+        self.assertEqual(fenced.values["pv_voltage"], 120.0)
+        self.assertEqual(fenced.values["pv_power"], 370)
         self.assertIn("MPPT=timeout", fenced.diagnostics["short_ascii_optional_status"])
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
         self.assertEqual(unsupported_commands(self.state), ())
@@ -581,7 +591,8 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
                 sample.next_due = 10_000
         self.transport.aux_responses[RUNTIME_QUERY_0200] = asyncio.TimeoutError()
         result = await self.read(3)
-        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(result.values["pv_voltage"], 120.0)
+        self.assertEqual(result.values["pv_power"], 370)
         self.assertIn("MPPT=timeout", result.diagnostics["short_ascii_optional_status"])
         # First failure + one in-cycle retry — both timeout.
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200, RUNTIME_QUERY_0200])
@@ -608,7 +619,9 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
             "unsupported_auxiliary_transport:_Transport",
         )
         result = await self.read(3)
-        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(result.values["pv_voltage"], 120.0)
+        self.assertEqual(result.values["pv_power"], 370)
+        self.assertIn("MPPT=invalid_response", result.diagnostics["short_ascii_optional_status"])
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
         self.assertEqual(result.diagnostics.get("mppt_fail_reason"), "structural")
         mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
@@ -635,7 +648,9 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
             "collector_disconnected",
         )
         result = await self.read(3)
-        self.assertNotIn("pv_power", result.values)
+        self.assertEqual(result.values["pv_voltage"], 120.0)
+        self.assertEqual(result.values["pv_power"], 370)
+        self.assertIn("MPPT=timeout", result.diagnostics["short_ascii_optional_status"])
         self.assertEqual(self.transport.aux_requests, [RUNTIME_QUERY_0200])
         self.assertEqual(result.diagnostics.get("mppt_fail_reason"), "connection")
         self.assertEqual(
@@ -657,7 +672,8 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.transport.aux_responses[RUNTIME_QUERY_0200] = asyncio.TimeoutError()
         for now in (3, 4, 5, 6, 7):
             result = await self.read(now)
-            self.assertNotIn("pv_power", result.values)
+            self.assertEqual(result.values["pv_voltage"], 120.0)
+            self.assertEqual(result.values["pv_power"], 370)
             self.assertIn("MPPT=timeout", result.diagnostics["short_ascii_optional_status"])
         self.assertEqual(unsupported_commands(self.state), ())
         self.assertEqual(result.diagnostics.get("driver_unsupported_commands"), "")
@@ -666,6 +682,124 @@ class MpptOptionalReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered.values["pv_power"], 370)
         self.assertIn("MPPT=ok", recovered.diagnostics["short_ascii_optional_status"])
 
+
+
+    async def test_soft_timeout_holds_last_good_mppt_until_ttl(self):
+        """Good 0200 then timeout: hold PV until TTL; failed reply adds no fields."""
+        await self._prime_through_rh()
+        for sample in self.state[STATE_KEY].samples:
+            if sample.command != "MPPT":
+                sample.next_due = 10_000
+        # Ensure a known good sample at sampled_at=0 from prime/anti-starve.
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        if mppt.sampled_at is None:
+            mppt.values = {"pv_voltage": 120.0, "pv_power": 370}
+            mppt.sampled_at = 0.0
+            mppt.outcome = "ok"
+        good_voltage = mppt.values["pv_voltage"]
+        good_power = mppt.values["pv_power"]
+        good_sampled_at = mppt.sampled_at
+        mppt.next_due = 3
+        self.transport.aux_requests.clear()
+        self.transport.aux_responses[RUNTIME_QUERY_0200] = asyncio.TimeoutError()
+        held = await self.read(3)
+        self.assertEqual(held.values["pv_voltage"], good_voltage)
+        self.assertEqual(held.values["pv_power"], good_power)
+        self.assertIn("MPPT=timeout", held.diagnostics["short_ascii_optional_status"])
+        self.assertEqual(unsupported_commands(self.state), ())
+        # sampled_at unchanged — hold clock, not a successful refresh.
+        self.assertEqual(mppt.sampled_at, good_sampled_at)
+        self.assertEqual(mppt.values["pv_power"], good_power)
+        # Inside TTL still published; past TTL fresh_values clears.
+        for sample in self.state[STATE_KEY].samples:
+            sample.next_due = 10_000
+        still = await self.read(50)
+        self.assertEqual(still.values["pv_voltage"], good_voltage)
+        self.assertEqual(still.values["pv_power"], good_power)
+        self.assertIn("MPPT=timeout", still.diagnostics["short_ascii_optional_status"])
+        expired = await self.read(64)
+        self.assertNotIn("pv_voltage", expired.values)
+        self.assertNotIn("pv_power", expired.values)
+        self.assertIn("MPPT=expired", expired.diagnostics["short_ascii_optional_status"])
+
+    async def test_framing_poison_holds_last_good_mppt_until_ttl(self):
+        """Framing poison: hold last-good PV; poison gates poll; TTL still clears."""
+        from custom_components.eybond_local.models import CollectorInfo
+
+        await self._prime_through_rh()
+        for sample in self.state[STATE_KEY].samples:
+            if sample.command != "MPPT":
+                sample.next_due = 10_000
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        if mppt.sampled_at is None:
+            mppt.values = {"pv_voltage": 120.0, "pv_power": 370}
+            mppt.sampled_at = 0.0
+            mppt.outcome = "ok"
+        mppt.next_due = 3
+        self.transport.aux_requests.clear()
+        self.transport.collector_info = CollectorInfo(
+            collector_pn="I30000200000000001",
+            last_disconnect_reason="",
+            mppt_framing_failure_latch="binary_frame_ambiguous",
+        )
+        self.transport.aux_responses[RUNTIME_QUERY_0200] = ConnectionError(
+            "collector_disconnected",
+        )
+        held = await self.read(3)
+        self.assertEqual(held.values["pv_voltage"], 120.0)
+        self.assertEqual(held.values["pv_power"], 370)
+        self.assertIn("MPPT=timeout", held.diagnostics["short_ascii_optional_status"])
+        health = self.state[HEALTH_KEY]
+        self.assertEqual(health.state, HEALTH_POISONED)
+        self.assertTrue(health.is_poisoned())
+        self.assertAlmostEqual(mppt.next_due, 3.0 + STRUCTURAL_BACKOFF, delta=1.0)
+        # Poison blocks re-poll; hold remains until TTL.
+        self.transport.aux_requests.clear()
+        self.transport.aux_responses[RUNTIME_QUERY_0200] = runtime_frame(voltage=9999, power=1).wire
+        for sample in self.state[STATE_KEY].samples:
+            sample.next_due = 10_000
+        mid = await self.read(40)
+        self.assertEqual(self.transport.aux_requests, [])
+        self.assertEqual(mid.values["pv_voltage"], 120.0)
+        self.assertEqual(mid.values["pv_power"], 370)
+        self.assertNotEqual(mid.values.get("pv_voltage"), 999.9)
+        expired = await self.read(64)
+        self.assertNotIn("pv_voltage", expired.values)
+        self.assertNotIn("pv_power", expired.values)
+        self.assertIn("MPPT=expired", expired.diagnostics["short_ascii_optional_status"])
+
+    async def test_checksum_invalid_reply_never_becomes_stored_sample(self):
+        """Contract/checksum reject must not overwrite last-good values."""
+        await self._prime_through_rh()
+        for sample in self.state[STATE_KEY].samples:
+            if sample.command != "MPPT":
+                sample.next_due = 10_000
+        mppt = next(s for s in self.state[STATE_KEY].samples if s.command == "MPPT")
+        if mppt.sampled_at is None:
+            mppt.values = {"pv_voltage": 120.0, "pv_power": 370}
+            mppt.sampled_at = 0.0
+            mppt.outcome = "ok"
+        before = dict(mppt.values)
+        before_at = mppt.sampled_at
+        mppt.next_due = 3
+        self.transport.aux_requests.clear()
+        bad = bytearray(runtime_frame(voltage=9999, power=1).wire)
+        bad[-1] ^= 0xFF  # aabb checksum invalid at optional parse path
+        self.transport.aux_responses[RUNTIME_QUERY_0200] = [
+            bytes(bad),
+            bytes(bad),  # in-cycle flaky retry also rejects
+        ]
+        result = await self.read(3)
+        self.assertEqual(result.values["pv_voltage"], before["pv_voltage"])
+        self.assertEqual(result.values["pv_power"], before["pv_power"])
+        self.assertEqual(mppt.values, before)
+        self.assertEqual(mppt.sampled_at, before_at)
+        self.assertIn(
+            "MPPT=invalid_response",
+            result.diagnostics["short_ascii_optional_status"],
+        )
+        self.assertNotEqual(result.values.get("pv_voltage"), 999.9)
+        self.assertEqual(unsupported_commands(self.state), ())
 
     async def test_prefer_fc4_when_mppt_also_due(self):
         await self._prime_through_rh()

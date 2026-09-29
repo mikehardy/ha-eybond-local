@@ -271,8 +271,11 @@ class OptionalReads:
                     frame = await session.request(sample.command)
                     parsed = sample.parser(frame)
             except _SOFT_ERRORS as exc:
-                # Envelope/transport failure: drop; do not invent a hold.
-                sample.clear()
+                # FC4 envelope failure: drop. Soft MPPT failure holds last-good
+                # values + sampled_at until TTL (fresh_values expires); never
+                # assign from the failed parse. Poison still gates next poll.
+                if sample.command != MPPT_COMMAND:
+                    sample.clear()
                 if sample.command == "RB":
                     self.rb_filter.clear()
                 sample.outcome = (
