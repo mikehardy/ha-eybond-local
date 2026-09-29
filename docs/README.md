@@ -31,6 +31,7 @@ If you are extending or maintaining the project, use [../CONTRIBUTING.md](../CON
 
 - [Adding Drivers](maintainer/ADDING_DRIVERS.md) — driver structure, registration, tests, and documentation updates
 - [Short-ASCII MIXED Socket](maintainer/SHORT_ASCII_MIXED_SOCKET.md) — EyeBond/AABB overlap, claim ownership, and reject rules for the auxiliary binary channel
+- [Short-ASCII driver](maintainer/SHORT_ASCII_DRIVER.md) — `eybond_short_ascii` probes, optional schedule, admission, and labelled estimates
 - [Validation](maintainer/VALIDATION.md) — focused tests, quality gate, and Home Assistant compatibility lanes
 - [Releasing](maintainer/RELEASING.md) — maintainer-only release preparation and publication checklist
 - [Issue Triage](maintainer/ISSUE_TRIAGE.md) — manual status labels, evidence requests, retest handling, and closing rules

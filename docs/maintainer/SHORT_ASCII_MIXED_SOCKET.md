@@ -228,4 +228,5 @@ Transitions:
 | 0200 field scales | `payload/short_ascii_mppt.py` |
 | Optional 0200 solicit + health | `drivers/short_ascii_mppt_optional.py` |
 | Publish / clear / force / poison / hold-until-TTL | `drivers/short_ascii_optional.py` |
+| Family probes, admission, estimates | [SHORT_ASCII_DRIVER.md](SHORT_ASCII_DRIVER.md) |
 | Framing-kill latch | `CollectorInfo.mppt_framing_failure_latch` + connection `take_mppt_framing_failure_latch` |
