@@ -18,7 +18,7 @@ Cancellation or timeout after sending closes that exact socket, since these
 replies have no transaction identifier. Reconnection starts a new owner.
 
 Integrity or boundary failures close the session. EyeBond and AABB can overlap
-on the first eight bytes; the reject rules, claim ownership, and the target
+on the first eight bytes; the reject rules, claim ownership, and the landed
 claim-based grammar choice are memorialized in
 [SHORT_ASCII_MIXED_SOCKET.md](SHORT_ASCII_MIXED_SOCKET.md). Follow that
 document rather than inferring policy from checksums or waiter liveness. The

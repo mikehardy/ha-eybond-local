@@ -137,38 +137,37 @@ structurally valid wire decode.
 
 Source: `BinaryFrameDecoder._select_boundary` in
 `custom_components/eybond_local/collector/transport/binary_framing.py`.
+The claim is the `auxiliary_claim` snapshot already taken in
+`connections.py` `_read_loop` and passed into `async_read_binary_frame`.
+A future merely being alive is **not** the claim.
 
 When the session grammar is `MIXED` and the first eight bytes are both:
 
 - a legal EyeBond header (`runtime_eybond_header_error` empty), and
 - an AABB prefix (`wire[:4] in AABB_PREFIXES`),
 
-the decoder fails with `binary_frame_ambiguous`. Neither a valid AABB checksum
-nor an absent waiter resolves that case today. The foundation then closes the
-binary session. This memorial does **not** claim the target rule below is
-already implemented.
+the decoder:
+
+1. If an outstanding `AuxiliaryReadClaim` is present **and**
+   `claim.subtype == wire[2:4]`, chooses AABB (21 bytes), then
+   `validate_aabb_frame`. Checksum (or other envelope) failure is still
+   `BinaryFramingError` (session close) and must not publish a frame.
+2. If the claim is `None`, or the subtype does not match, fails with
+   `binary_frame_ambiguous`. It does **not** read a speculative longer
+   EyeBond tail.
+
+A real EyeBond frame whose TID is `0xAABB` during a matching claim still takes
+the AABB path; the 21-byte checksum then fails, the session closes, and no
+sensor write occurs. Next reconnect is a normal session. Unsolicited `aa bb`
+with no claim stays unpublished (`binary_frame_ambiguous` / unowned). A `0202`
+claim must not be decoded as `0200` runtime telemetry: subtype match is
+required, and `parse_mppt_runtime` still rejects non-`0200`.
 
 On a 0200 reply, those eight bytes map as EyeBond
 `tid=0xAABB`, `devcode=0x0200`, `wire_len` = PV voltage raw word, and `fcode` =
 low byte of `(pv_power_w / 10)`. The header is legal when
 `(PV watts / 10) mod 256` is in `{1, 2, 3, 4, 17, 18, 19}` (and length stays in
 range)—the known collision set.
-
-## Target grammar fudge (NOT landed)
-
-**Not implemented in product code yet.** Intended decoder contract for a later
-phase:
-
-1. When the first eight bytes are both a legal EyeBond header **and** the AABB
-   prefix for the subtype of an **outstanding** `AuxiliaryReadClaim`, choose
-   AABB, then run `validate_aabb_frame`.
-2. Overlap with **no** claim stays `binary_frame_ambiguous` (session close).
-3. After choosing AABB, a bad checksum (or other `validate_aabb_frame` failure)
-   is still a reject and still closes the session; it must not publish.
-4. The known collision remains when `(PV watts / 10) mod 256 ∈ {1,2,3,4,17,18,19}`
-   under subtype `0200`.
-
-Until that lands, cite `_select_boundary` above as the source of truth.
 
 ## Session-fatal vs sample-reject
 
