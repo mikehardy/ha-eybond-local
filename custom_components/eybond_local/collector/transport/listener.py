@@ -2313,6 +2313,11 @@ class _SharedEybondListener:
         if not self._pending_socket_still_registered(pending):
             return
 
+        logger.warning(
+            "Adopting silent framed redial remote=%s",
+            pending.remote_ip,
+        )
+
         self._remove_pending_socket(pending)
         if self._last_pending_ip == pending.remote_ip:
             self._last_pending_ip = ""

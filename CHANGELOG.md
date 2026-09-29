@@ -70,7 +70,10 @@ the GitHub release body should be rendered from the matching version section her
 - A collector that redials without sending bytes, and that this listener
   already owns as a framed payload peer, enters the framed session and receives
   a heartbeat. An AT owner on the same IP, or a transparent-route reservation,
-  still waits for identity bytes.
+  still waits for identity bytes. That adopt logs
+  `Adopting silent framed redial remote=`. A discarded illegal header logs
+  `Discarded illegal EyeBond header` with the dropped hex and the next
+  header's tid, function code, and payload length.
 
 ### Fixed
 
