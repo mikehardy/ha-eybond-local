@@ -27,11 +27,18 @@ the GitHub release body should be rendered from the matching version section her
 
 - Short-ASCII publishes labelled **Estimated AC Load Power**
   (`estimated_ac_load_power` = load% × rated VA from F) and **Best Available AC
-  Load Estimate** (`best_available_ac_load_estimate`): net pack discharge
-  (≤ −25 W) → `abs(battery_power)` (`bms_dc`); else Q1 %×VA (`q1_percent`) —
-  for low-load Q1 zeros. Pure `estimated_ac_load_power`, `battery_power`, and
-  `pv_power` stay separate; optional diagnostic
-  `best_available_ac_load_estimate_source` is `q1_percent` | `bms_dc` (#45).
+  Load Estimate** (`best_available_ac_load_estimate`). A reporting Q1 load
+  (> 0 W) wins. Otherwise the estimate is `max(0, PV − battery watts)` with
+  battery sign +charge / −discharge, then PV alone if BMS watts are missing,
+  then Q1 including 0 W. Pure `estimated_ac_load_power`, `battery_power`, and
+  `pv_power` stay separate. Live `battery_power` is preferred; a labelled
+  `battery_power_held_estimate` (≤ 180 s) may fill a link-loss gap and the
+  source tag gains `_held`.
+
+- Short-ASCII BMS link-loss still omits live measurement keys. Labelled
+  `*_held_estimate` mirrors (180 s) cover dashboard gaps and the load estimate
+  above. They are not the live BMS sensors. The hold cache survives a runtime
+  reconnect reset.
 
 - Short-ASCII devices can also expose documented BMS and rated readings through
   optional read-only RB/F/RH queries. These entities are disabled by default.
@@ -49,7 +56,21 @@ the GitHub release body should be rendered from the matching version section her
   installs do not poll until admitted). Live PV/MPPT measurement sensors stay
   **disabled by default**. Quiet fault diagnostics `q1_error_code`, `q1_error`,
   `ups_fault`, `mppt_error_code`, and `mppt_error` are `enabled_default: true`
-  (entity state only — no per-poll WARNING spam).
+  (entity state only — no per-poll WARNING spam). When an outstanding `0200`
+  claim matches an EyeBond/AABB overlap, the reply is read as AABB and must
+  still pass the checksum. A framing kill poisons further `0200` polls for
+  120 s. The last good MPPT sample is held until its 60 s TTL and is not
+  replaced by a failed reply.
+
+- An illegal EyeBond header is dropped once as a whole 8-byte window and the
+  next header is read fresh. A second illegal header still closes the session.
+  Bytes from the discarded window are not published. Ambiguous overlap with no
+  claim, and a bad AABB checksum, still close the session.
+
+- A collector that redials without sending bytes, and that this listener
+  already owns as a framed payload peer, enters the framed session and receives
+  a heartbeat. An AT owner on the same IP, or a transparent-route reservation,
+  still waits for identity bytes.
 
 ### Fixed
 
