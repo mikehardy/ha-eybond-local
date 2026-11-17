@@ -165,9 +165,36 @@ Q1_ERROR_LABELS = {
     8: "excess temperature",
     9: "Output low voltage",
     11: "temperature is too low or the temperature control fails",
+    13: "Low temperature shutdown",
     14: "Open fan circuit",
     15: "mains input relay is faulty",
     16: "mains input is too high",
+    19: "Weak/decaying battery or HC function limit",
+    # Extra codes: manual Exx text with E stripped. One Q1 ErrCode byte — no BMS vs
+    # inverter provenance. 21 collides (inverter overload discharge vs BMS single-core
+    # voltage consistency); inverter wording used; cannot disambiguate on the wire.
+    21: "Overload discharge protection",
+    22: "MOSFET high temperature alarm",
+    23: "Low temperature of a single core alarm",
+    24: "Alarm for high temperature of single core",
+    25: "Single-core voltage low alarm",
+    26: "Single-core voltage high alarm",
+    27: "The total voltage of the module is low",
+    28: "The total voltage of the module is high",
+    35: "Intercom error alarms",
+    36: "Discharge over current alarm",
+    37: "Charging over current alarm",
+    38: "Single-core temperature consistency alarm",
+    42: "MOSFET over-temperature protection",
+    43: "Single-core temperature under-temperature protection",
+    44: "Single-core temperature over-temperature protection",
+    45: "Single-core voltage under-voltage protection",
+    46: "Single-core voltage over voltage protection",
+    47: "Module total voltage undervoltage protection",
+    48: "Module total voltage over voltage protection",
+    54: "System fail-safe protection",
+    56: "Discharge over current protection",
+    57: "Charging over current protection",
 }
 
 
